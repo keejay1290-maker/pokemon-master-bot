@@ -1,6 +1,6 @@
 FROM node:20-alpine AS builder
 
-RUN apk add --no-cache python3 make g++ cairo-dev pango-dev libjpeg-turbo-dev giflib-dev librsvg-dev
+RUN apk add --no-cache openssl openssl-dev python3 make g++ cairo-dev pango-dev libjpeg-turbo-dev giflib-dev librsvg-dev
 
 WORKDIR /app
 
@@ -15,7 +15,7 @@ RUN npm run build
 
 FROM node:20-alpine AS production
 
-RUN apk add --no-cache cairo pango libjpeg-turbo giflib librsvg
+RUN apk add --no-cache openssl cairo pango libjpeg-turbo giflib librsvg
 
 WORKDIR /app
 
