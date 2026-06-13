@@ -1,6 +1,7 @@
 import { SlashCommandBuilder, ChatInputCommandInteraction } from 'discord.js';
 import type { BotClient, Command } from '../../types/index.js';
 import { errorEmbed } from '../../utils/embeds.js';
+import { REDIS_KEYS, deserializeSpawn } from '../../utils/redisKeys.js';
 
 const command: Command = {
   data: new SlashCommandBuilder()
@@ -14,9 +15,10 @@ const command: Command = {
       return;
     }
 
-    const spawn = [...client.activeSpawns.values()].find(
-      (s) => s.guildId === interaction.guild!.id
-    );
+    const messageId = await client.redis.get(REDIS_KEYS.guildSpawn(interaction.guild.id));
+    const spawn = messageId
+      ? deserializeSpawn(await client.redis.get(REDIS_KEYS.spawn(messageId)))
+      : null;
 
     if (!spawn) {
       await interaction.reply({

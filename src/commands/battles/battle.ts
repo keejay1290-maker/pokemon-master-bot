@@ -30,18 +30,28 @@ const command: Command = {
       return;
     }
 
-    // Check if either user is already in a battle
-    const existingBattle = [...client.activeBattles.values()].find(
-      (b) => b.challengerId === interaction.user.id || b.opponentId === interaction.user.id ||
-             b.challengerId === opponent.id || b.opponentId === opponent.id
-    );
-    if (existingBattle) {
-      await interaction.reply({ content: 'One of you is already in a battle!', ephemeral: true });
+    const { REDIS_KEYS, REDIS_TTLS, serializeBattle, deserializeBattle } = await import('../../utils/redisKeys.js');
+    
+    const myLockKey = REDIS_KEYS.battleLock(interaction.user.id);
+    const opponentLockKey = REDIS_KEYS.battleLock(opponent.id);
+
+    // Try to acquire locks
+    const acquiredMe = await client.redis.set(myLockKey, 'pending', { NX: true, EX: 60 });
+    if (!acquiredMe) {
+      await interaction.reply({ content: 'You are already in a battle or have a pending challenge!', ephemeral: true });
+      return;
+    }
+
+    const acquiredThem = await client.redis.set(opponentLockKey, 'pending', { NX: true, EX: 60 });
+    if (!acquiredThem) {
+      await client.redis.del(myLockKey);
+      await interaction.reply({ content: `<@${opponent.id}> is already in a battle or has a pending challenge!`, ephemeral: true });
       return;
     }
 
     const challengerTeam = await loadBattleTeam(client.prisma, interaction.user.id);
     if (challengerTeam.length === 0) {
+      await client.redis.del([myLockKey, opponentLockKey]);
       await interaction.reply({ content: "You don't have any Pokemon! Use `/catch` first.", ephemeral: true });
       return;
     }
@@ -63,6 +73,8 @@ const command: Command = {
     );
 
     const msg = await interaction.reply({ embeds: [embed], components: [row], fetchReply: true });
+    let challengeResolved = false;
+
     const collector = msg.createMessageComponentCollector({ componentType: ComponentType.Button, time: 60000 });
 
     collector.on('collect', async (btn) => {
@@ -70,9 +82,11 @@ const command: Command = {
         await btn.reply({ content: "This isn't your battle invite!", ephemeral: true });
         return;
       }
+      challengeResolved = true;
       collector.stop();
 
       if (btn.customId === 'decline') {
+        await client.redis.del([myLockKey, opponentLockKey]);
         await btn.update({ embeds: [new EmbedBuilder().setColor(0x808080).setTitle('❌ Battle Declined')], components: [] });
         return;
       }
@@ -80,6 +94,7 @@ const command: Command = {
       // Start the battle
       const opponentTeam = await loadBattleTeam(client.prisma, opponent.id);
       if (opponentTeam.length === 0) {
+        await client.redis.del([myLockKey, opponentLockKey]);
         await btn.update({ content: `<@${opponent.id}> has no Pokemon!`, embeds: [], components: [] });
         return;
       }
@@ -115,7 +130,10 @@ const command: Command = {
         messageId: msg.id,
       };
 
-      client.activeBattles.set(state.id, state);
+      const battleKey = REDIS_KEYS.battle(state.id);
+      await client.redis.set(myLockKey, 'active', { EX: REDIS_TTLS.BATTLE });
+      await client.redis.set(opponentLockKey, 'active', { EX: REDIS_TTLS.BATTLE });
+      await client.redis.set(battleKey, serializeBattle(state), { EX: REDIS_TTLS.BATTLE });
 
       const battleEmbed = buildBattleEmbed(state, interaction.user.username, opponent.username);
       const battleRow = buildBattleRow(state);
@@ -123,86 +141,110 @@ const command: Command = {
       await btn.update({ embeds: [battleEmbed], components: [battleRow] });
 
       // Battle timeout
-      state.timeout = setTimeout(async () => {
-        const s = client.activeBattles.get(state.id);
-        if (!s || s.status === 'finished') return;
-        client.activeBattles.delete(state.id);
-        await msg.edit({ embeds: [new EmbedBuilder().setColor(0x808080).setTitle('⏰ Battle Timed Out')], components: [] }).catch(() => {});
+      setTimeout(async () => {
+        const rawS = await client.redis.get(battleKey);
+        if (rawS) {
+          const s = deserializeBattle(rawS);
+          if (s && s.status !== 'finished') {
+            await client.redis.del([battleKey, myLockKey, opponentLockKey]);
+            await msg.edit({ embeds: [new EmbedBuilder().setColor(0x808080).setTitle('⏰ Battle Timed Out')], components: [] }).catch(() => {});
+          }
+        }
       }, 300000);
 
       // Move collector
       const moveCollector = msg.createMessageComponentCollector({ componentType: ComponentType.Button, time: 300000 });
       moveCollector.on('collect', async (moveBtn) => {
-        const currentState = client.activeBattles.get(state.id);
-        if (!currentState || currentState.status === 'finished') { moveCollector.stop(); return; }
+        const processingKey = `battle:processing:${state.id}`;
+        const canProcess = await client.redis.set(processingKey, '1', { NX: true, EX: 5 });
+        if (!canProcess) return; // Prevent overlapping clicks
 
-        if (moveBtn.user.id !== currentState.currentTurnUserId) {
-          await moveBtn.reply({ content: "It's not your turn!", ephemeral: true });
-          return;
-        }
-
-        const isChallenger = moveBtn.user.id === currentState.challengerId;
-        const attackerTeam = isChallenger ? currentState.challengerTeam : currentState.opponentTeam;
-        const defenderTeam = isChallenger ? currentState.opponentTeam : currentState.challengerTeam;
-        const attackerIdx = isChallenger ? currentState.challengerActivePokemonIndex : currentState.opponentActivePokemonIndex;
-        const defenderIdx = isChallenger ? currentState.opponentActivePokemonIndex : currentState.challengerActivePokemonIndex;
-
-        const attacker = attackerTeam[attackerIdx];
-        const defender = defenderTeam[defenderIdx];
-
-        if (!attacker || !defender) return;
-
-        const moveIndex = parseInt(moveBtn.customId.replace('move_', ''));
-        const moveName = attacker.moves[moveIndex] ?? 'tackle';
-
-        // Simple damage calculation
-        const basePower = 40 + Math.floor(Math.random() * 60);
-        const damage = Math.max(1, Math.floor(attacker.attack * basePower / (50 * (defender.defense || 1))));
-        defender.currentHp = Math.max(0, defender.currentHp - damage);
-
-        currentState.battleLog.push(`${attacker.name} used ${moveName}! Dealt ${damage} damage.`);
-        currentState.turn++;
-        currentState.currentTurnUserId = isChallenger ? currentState.opponentId : currentState.challengerId;
-
-        const challengerName = isChallenger ? moveBtn.user.username : opponent.username;
-        const opponentName = isChallenger ? opponent.username : moveBtn.user.username;
-
-        // Check faint
-        if (checkFainted(defender)) {
-          defenderTeam[defenderIdx].currentHp = 0;
-          const allFainted = defenderTeam.every((p) => p.currentHp <= 0);
-          if (allFainted) {
-            currentState.status = 'finished';
-            if (currentState.timeout) clearTimeout(currentState.timeout);
+        try {
+          const rawState = await client.redis.get(battleKey);
+          if (!rawState) {
             moveCollector.stop();
-            const winnerId = moveBtn.user.id;
-            await saveBattleResult(client, currentState, winnerId);
-            const winnerName = winnerId === currentState.challengerId ? challengerName : opponentName;
-            await moveBtn.update({
-              embeds: [new EmbedBuilder().setColor(0xffd700).setTitle('🏆 Battle Ended!')
-                .setDescription(`**${winnerName}** wins!\n\n${currentState.battleLog.slice(-5).join('\n')}`)],
-              components: [],
-            });
+            await moveBtn.reply({ content: "Battle not found or has expired.", ephemeral: true });
             return;
           }
-          // Find next alive Pokemon
-          if (isChallenger) {
-            const nextIdx = defenderTeam.findIndex((p, i) => i > defenderIdx && p.currentHp > 0);
-            if (nextIdx !== -1) currentState.opponentActivePokemonIndex = nextIdx;
-          } else {
-            const nextIdx = defenderTeam.findIndex((p, i) => i > defenderIdx && p.currentHp > 0);
-            if (nextIdx !== -1) currentState.challengerActivePokemonIndex = nextIdx;
-          }
-        }
 
-        const updatedEmbed = buildBattleEmbed(currentState, challengerName, opponentName);
-        const updatedRow = buildBattleRow(currentState);
-        await moveBtn.update({ embeds: [updatedEmbed], components: [updatedRow] });
+          const currentState = deserializeBattle(rawState);
+          if (!currentState || currentState.status === 'finished') { moveCollector.stop(); return; }
+
+          if (moveBtn.user.id !== currentState.currentTurnUserId) {
+            await moveBtn.reply({ content: "It's not your turn!", ephemeral: true });
+            return;
+          }
+
+          const isChallenger = moveBtn.user.id === currentState.challengerId;
+          const attackerTeam = isChallenger ? currentState.challengerTeam : currentState.opponentTeam;
+          const defenderTeam = isChallenger ? currentState.opponentTeam : currentState.challengerTeam;
+          const attackerIdx = isChallenger ? currentState.challengerActivePokemonIndex : currentState.opponentActivePokemonIndex;
+          const defenderIdx = isChallenger ? currentState.opponentActivePokemonIndex : currentState.challengerActivePokemonIndex;
+
+          const attacker = attackerTeam[attackerIdx];
+          const defender = defenderTeam[defenderIdx];
+
+          if (!attacker || !defender) return;
+
+          const moveIndex = parseInt(moveBtn.customId.replace('move_', ''));
+          const moveName = attacker.moves[moveIndex] ?? 'tackle';
+
+          // Simple damage calculation
+          const basePower = 40 + Math.floor(Math.random() * 60);
+          const damage = Math.max(1, Math.floor(attacker.attack * basePower / (50 * (defender.defense || 1))));
+          defender.currentHp = Math.max(0, defender.currentHp - damage);
+
+          currentState.battleLog.push(`${attacker.name} used ${moveName}! Dealt ${damage} damage.`);
+          currentState.turn++;
+          currentState.currentTurnUserId = isChallenger ? currentState.opponentId : currentState.challengerId;
+
+          const challengerName = isChallenger ? moveBtn.user.username : opponent.username;
+          const opponentName = isChallenger ? opponent.username : moveBtn.user.username;
+
+          // Check faint
+          if (checkFainted(defender)) {
+            defenderTeam[defenderIdx].currentHp = 0;
+            const allFainted = defenderTeam.every((p) => p.currentHp <= 0);
+            if (allFainted) {
+              currentState.status = 'finished';
+              await client.redis.del([battleKey, myLockKey, opponentLockKey]);
+              moveCollector.stop();
+              const winnerId = moveBtn.user.id;
+              await saveBattleResult(client, currentState, winnerId);
+              const winnerName = winnerId === currentState.challengerId ? challengerName : opponentName;
+              await moveBtn.update({
+                embeds: [new EmbedBuilder().setColor(0xffd700).setTitle('🏆 Battle Ended!')
+                  .setDescription(`**${winnerName}** wins!\n\n${currentState.battleLog.slice(-5).join('\n')}`)],
+                components: [],
+              });
+              return;
+            }
+            // Find next alive Pokemon
+            if (isChallenger) {
+              const nextIdx = defenderTeam.findIndex((p, i) => i > defenderIdx && p.currentHp > 0);
+              if (nextIdx !== -1) currentState.opponentActivePokemonIndex = nextIdx;
+            } else {
+              const nextIdx = defenderTeam.findIndex((p, i) => i > defenderIdx && p.currentHp > 0);
+              if (nextIdx !== -1) currentState.challengerActivePokemonIndex = nextIdx;
+            }
+          }
+
+          await client.redis.set(battleKey, serializeBattle(currentState), { EX: REDIS_TTLS.BATTLE });
+
+          const updatedEmbed = buildBattleEmbed(currentState, challengerName, opponentName);
+          const updatedRow = buildBattleRow(currentState);
+          await moveBtn.update({ embeds: [updatedEmbed], components: [updatedRow] });
+        } catch (err) {
+          console.error(err);
+        } finally {
+          await client.redis.del(processingKey);
+        }
       });
     });
 
-    collector.on('end', (_, reason) => {
-      if (reason === 'time') {
+    collector.on('end', async (_, reason) => {
+      if (!challengeResolved || reason === 'time') {
+        await client.redis.del([myLockKey, opponentLockKey]);
         interaction.editReply({ embeds: [new EmbedBuilder().setColor(0x808080).setTitle('⏰ Challenge Expired')], components: [] }).catch(() => {});
       }
     });

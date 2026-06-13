@@ -59,32 +59,44 @@ const command: Command = {
 
     const successRate = guild?.robSuccessRate ?? 0.4;
     const success = Math.random() < successRate;
+    const maxLoss = guild?.robMaxLoss ?? 1000;
 
-    if (success) {
-      const maxLoss = guild?.robMaxLoss ?? 1000;
-      const stolen = Math.min(Math.floor(victim.balance * (Math.random() * 0.3 + 0.1)), maxLoss);
+    let resultEmbed: EmbedBuilder;
 
-      await client.prisma.$transaction([
-        client.prisma.user.update({ where: { id: interaction.user.id }, data: { balance: { increment: stolen }, totalEarned: { increment: stolen } } }),
-        client.prisma.user.update({ where: { id: target.id }, data: { balance: { decrement: stolen }, lastRobbed: new Date() } }),
-      ]);
+    try {
+      await client.prisma.$transaction(async (tx) => {
+        const currentRobber = await tx.user.findUnique({ where: { id: interaction.user.id } });
+        const currentVictim = await tx.user.findUnique({ where: { id: target.id } });
 
-      await interaction.reply({
-        embeds: [new EmbedBuilder().setColor(0x00ff00).setTitle('🦹 Robbery Successful!')
-          .setDescription(`You sneaked into ${target.username}'s bag and stole **${formatNumber(stolen)} PokéCoins**!`).setTimestamp()],
+        if (!currentRobber || !currentVictim) throw new Error('USER_NOT_FOUND');
+        if (currentVictim.balance < 100) throw new Error('VICTIM_BROKE');
+
+        if (success) {
+          const stolen = Math.min(Math.floor(currentVictim.balance * (Math.random() * 0.3 + 0.1)), maxLoss);
+          if (stolen > 0) {
+            await tx.user.update({ where: { id: interaction.user.id }, data: { balance: { increment: stolen }, totalEarned: { increment: stolen } } });
+            await tx.user.update({ where: { id: target.id }, data: { balance: { decrement: stolen }, lastRobbed: new Date() } });
+          }
+          resultEmbed = new EmbedBuilder().setColor(0x00ff00).setTitle('🦹 Robbery Successful!')
+            .setDescription(`You sneaked into ${target.username}'s bag and stole **${formatNumber(stolen)} PokéCoins**!`).setTimestamp();
+        } else {
+          const fine = Math.min(Math.floor(currentRobber.balance * 0.15), 500);
+          if (fine > 0) {
+            await tx.user.update({ where: { id: interaction.user.id }, data: { balance: { decrement: fine }, totalSpent: { increment: fine } } });
+            await tx.user.update({ where: { id: target.id }, data: { balance: { increment: fine } } });
+          }
+          resultEmbed = new EmbedBuilder().setColor(0xff4444).setTitle('🚨 Caught!')
+            .setDescription(`You were caught trying to rob ${target.username}! You paid a **${formatNumber(fine)} PokéCoin** fine.`).setTimestamp();
+        }
       });
-    } else {
-      const fine = Math.min(Math.floor(robber.balance * 0.15), 500);
-      if (fine > 0) {
-        await client.prisma.$transaction([
-          client.prisma.user.update({ where: { id: interaction.user.id }, data: { balance: { decrement: fine }, totalSpent: { increment: fine } } }),
-          client.prisma.user.update({ where: { id: target.id }, data: { balance: { increment: fine } } }),
-        ]);
+      await interaction.reply({ embeds: [resultEmbed!] });
+    } catch (e: any) {
+      if (e.message === 'VICTIM_BROKE') {
+        await interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('💸 Broke!').setDescription(`${target.username} doesn't have enough coins to rob!`)], ephemeral: true });
+      } else {
+        console.error(e);
+        await interaction.reply({ content: 'An error occurred during the robbery.', ephemeral: true });
       }
-      await interaction.reply({
-        embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('🚨 Caught!')
-          .setDescription(`You were caught trying to rob ${target.username}! You paid a **${formatNumber(fine)} PokéCoin** fine.`).setTimestamp()],
-      });
     }
   },
 };

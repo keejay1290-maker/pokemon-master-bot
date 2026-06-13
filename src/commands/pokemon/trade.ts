@@ -54,10 +54,20 @@ const command: Command = {
       }
 
       // Execute trade
-      await client.prisma.$transaction([
-        client.prisma.userPokemon.update({ where: { id: offerId }, data: { userId: target.id } }),
-        client.prisma.userPokemon.update({ where: { id: requestId }, data: { userId: interaction.user.id } }),
-      ]);
+      try {
+        await client.prisma.$transaction(async (tx) => {
+          const currentMy = await tx.userPokemon.findFirst({ where: { id: offerId, userId: interaction.user.id } });
+          const currentTheir = await tx.userPokemon.findFirst({ where: { id: requestId, userId: target.id } });
+          
+          if (!currentMy || !currentTheir) throw new Error('TRADE_FAILED');
+
+          await tx.userPokemon.update({ where: { id: offerId }, data: { userId: target.id } });
+          await tx.userPokemon.update({ where: { id: requestId }, data: { userId: interaction.user.id } });
+        });
+      } catch (e) {
+        await btn.update({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('❌ Trade Failed').setDescription('One of the Pokemon is no longer available.')], components: [] });
+        return;
+      }
 
       await client.prisma.trade.create({
         data: {

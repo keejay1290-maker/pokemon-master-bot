@@ -36,7 +36,7 @@ describe('Pokemon stat calculations', () => {
 
   test('type effectiveness dual type', () => {
     const eff = getTypeEffectiveness('electric', 'water', 'flying');
-    expect(eff).toBe(2);
+    expect(eff).toBe(4);
   });
 
   test('xpToNextLevel grows with level', () => {

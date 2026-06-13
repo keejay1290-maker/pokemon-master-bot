@@ -1,6 +1,7 @@
 import { Message, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } from 'discord.js';
 import type { BotClient } from '../types/index.js';
 import { TypeColors } from '../utils/embeds.js';
+import { REDIS_KEYS, REDIS_TTLS, deserializeSpawn, serializeSpawn } from '../utils/redisKeys.js';
 
 const MESSAGE_SPAWN_CHANCE = 0.05;
 
@@ -37,7 +38,7 @@ export async function spawnPokemon(client: BotClient, guildId: string, channelId
       .setColor((TypeColors[pokemon.type1] as number) || 0xffcb05)
       .setTitle(isShiny ? '✨ A wild Shiny Pokemon appeared!' : '⚡ A wild Pokemon appeared!')
       .setDescription(
-        `**Type${pokemon.type2 ? 's' : ''}:** ${[pokemon.type1, pokemon.type2].filter(Boolean).map(capitalize).join(' / ')}\n\nQuick! Use **/catch** to capture it!`
+        `**Type${pokemon.type2 ? 's' : ''}:** ${[pokemon.type1, pokemon.type2].filter((type): type is string => Boolean(type)).map(capitalize).join(' / ')}\n\nQuick! Use **/catch** to capture it!`
       )
       .setImage(imageUrl ?? null)
       .setFooter({ text: `This Pokemon will disappear in 5 minutes!` })
@@ -74,7 +75,7 @@ export async function spawnPokemon(client: BotClient, guildId: string, channelId
       },
     });
 
-    client.activeSpawns.set(msg.id, {
+    const spawnState = {
       pokemonId: pokemon.id,
       isShiny,
       spawnId: spawn.id,
@@ -82,7 +83,15 @@ export async function spawnPokemon(client: BotClient, guildId: string, channelId
       channelId,
       messageId: msg.id,
       expiresAt,
-    });
+    };
+    
+    const spawnKey = REDIS_KEYS.spawn(msg.id);
+    const guildSpawnKey = REDIS_KEYS.guildSpawn(guildId);
+    await client.redis
+      .multi()
+      .set(spawnKey, serializeSpawn(spawnState), { EX: REDIS_TTLS.SPAWN })
+      .set(guildSpawnKey, msg.id, { EX: REDIS_TTLS.SPAWN })
+      .exec();
 
     const collector = msg.createMessageComponentCollector({
       componentType: ComponentType.Button,
@@ -95,79 +104,98 @@ export async function spawnPokemon(client: BotClient, guildId: string, channelId
 
       await interaction.deferReply({ ephemeral: true });
 
-      const activeSpawn = client.activeSpawns.get(msg.id);
-      if (!activeSpawn) {
-        await interaction.editReply('This Pokemon has already been caught!');
-        return;
+      // GETDEL atomically claims the spawn so only one interaction can catch it.
+      try {
+        const spawnData = await client.redis.sendCommand(['GETDEL', spawnKey]) as string | null;
+        if (!spawnData) {
+          await interaction.editReply('This Pokemon has already been caught or ran away!');
+          return;
+        }
+        
+        const activeSpawn = deserializeSpawn(spawnData);
+        if (!activeSpawn) {
+          await interaction.editReply('This Pokemon has already been caught or ran away!');
+          return;
+        }
+
+        const dbSpawn = await client.prisma.spawn.findUnique({ where: { id: activeSpawn.spawnId } });
+        if (!dbSpawn || dbSpawn.isCaught) {
+          await interaction.editReply('This Pokemon has already been caught!');
+          return;
+        }
+
+        // Catch the Pokemon
+        collector.stop();
+
+        const nature = ['Hardy','Lonely','Brave','Adamant','Naughty','Bold','Docile','Relaxed','Impish','Lax','Timid','Hasty','Serious','Jolly','Naive','Modest','Mild','Quiet','Bashful','Rash','Calm','Gentle','Sassy','Careful','Quirky'][Math.floor(Math.random() * 25)];
+
+        const moves = await client.prisma.pokemonMove.findMany({
+          where: { pokemonId: pokemon.id },
+          orderBy: [{ learnLevel: 'asc' }, { moveName: 'asc' }],
+          take: 4,
+        });
+
+        const userPokemon = await client.prisma.userPokemon.create({
+          data: {
+            userId: interaction.user.id,
+            pokemonId: pokemon.id,
+            isShiny,
+            level: Math.floor(Math.random() * 30) + 1,
+            nature,
+            ivHp: Math.floor(Math.random() * 32),
+            ivAttack: Math.floor(Math.random() * 32),
+            ivDefense: Math.floor(Math.random() * 32),
+            ivSpAttack: Math.floor(Math.random() * 32),
+            ivSpDefense: Math.floor(Math.random() * 32),
+            ivSpeed: Math.floor(Math.random() * 32),
+            moves: moves.length > 0 ? moves.map((move) => move.moveName) : ['tackle', 'growl', 'scratch', 'quick-attack'],
+          },
+        });
+
+        await client.prisma.spawn.update({
+          where: { id: activeSpawn.spawnId },
+          data: { isCaught: true, caughtById: interaction.user.id, caughtAt: new Date() },
+        });
+
+        await client.prisma.user.update({
+          where: { id: interaction.user.id },
+          data: {
+            pokemonCaught: { increment: 1 },
+            shinyCaught: isShiny ? { increment: 1 } : undefined,
+            legendariesCaught: pokemon.isLegendary ? { increment: 1 } : undefined,
+            trainerXp: { increment: isShiny ? 100 : pokemon.isLegendary ? 500 : 25 },
+          },
+        });
+
+        await client.redis.del(guildSpawnKey);
+
+        const catchEmbed = new EmbedBuilder()
+          .setColor(isShiny ? 0xffd700 : 0x00ff00)
+          .setTitle(isShiny ? `✨ Shiny ${pokemon.nameDisplay} caught!` : `🎉 ${pokemon.nameDisplay} caught!`)
+          .setThumbnail(imageUrl ?? null)
+          .addFields(
+            { name: 'Level', value: `${userPokemon.level}`, inline: true },
+            { name: 'Nature', value: nature, inline: true },
+            { name: 'ID', value: `#${userPokemon.id.slice(0, 8)}`, inline: true }
+          );
+
+        await interaction.editReply({ embeds: [catchEmbed] });
+
+        const caughtEmbed = new EmbedBuilder()
+          .setColor(isShiny ? 0xffd700 : 0x00ff00)
+          .setTitle(isShiny ? `✨ Shiny ${pokemon.nameDisplay} was caught!` : `${pokemon.nameDisplay} was caught!`)
+          .setDescription(`<@${interaction.user.id}> caught the ${isShiny ? 'Shiny ' : ''}${pokemon.nameDisplay}!`)
+          .setImage(imageUrl ?? null);
+
+        await msg.edit({ embeds: [caughtEmbed], components: [] }).catch(() => {});
+      } catch (err) {
+        client.logger.error('Catch error:', err);
+        await interaction.editReply('The catch failed unexpectedly. Please try again.');
       }
-
-      const dbSpawn = await client.prisma.spawn.findUnique({ where: { id: spawn.id } });
-      if (!dbSpawn || dbSpawn.isCaught) {
-        await interaction.editReply('This Pokemon has already been caught!');
-        return;
-      }
-
-      // Catch the Pokemon
-      client.activeSpawns.delete(msg.id);
-      collector.stop();
-
-      const nature = ['Hardy','Lonely','Brave','Adamant','Naughty','Bold','Docile','Relaxed','Impish','Lax','Timid','Hasty','Serious','Jolly','Naive','Modest','Mild','Quiet','Bashful','Rash','Calm','Gentle','Sassy','Careful','Quirky'][Math.floor(Math.random() * 25)];
-
-      const userPokemon = await client.prisma.userPokemon.create({
-        data: {
-          userId: interaction.user.id,
-          pokemonId: pokemon.id,
-          isShiny,
-          level: Math.floor(Math.random() * 30) + 1,
-          nature,
-          ivHp: Math.floor(Math.random() * 32),
-          ivAttack: Math.floor(Math.random() * 32),
-          ivDefense: Math.floor(Math.random() * 32),
-          ivSpAttack: Math.floor(Math.random() * 32),
-          ivSpDefense: Math.floor(Math.random() * 32),
-          ivSpeed: Math.floor(Math.random() * 32),
-          moves: pokemon.moves.slice(0, 4),
-        },
-      });
-
-      await client.prisma.spawn.update({
-        where: { id: spawn.id },
-        data: { isCaught: true, caughtById: interaction.user.id, caughtAt: new Date() },
-      });
-
-      await client.prisma.user.update({
-        where: { id: interaction.user.id },
-        data: {
-          pokemonCaught: { increment: 1 },
-          shinyCaught: isShiny ? { increment: 1 } : undefined,
-          legendariesCaught: pokemon.isLegendary ? { increment: 1 } : undefined,
-          trainerXp: { increment: isShiny ? 100 : pokemon.isLegendary ? 500 : 25 },
-        },
-      });
-
-      const catchEmbed = new EmbedBuilder()
-        .setColor(isShiny ? 0xffd700 : 0x00ff00)
-        .setTitle(isShiny ? `✨ Shiny ${pokemon.nameDisplay} caught!` : `🎉 ${pokemon.nameDisplay} caught!`)
-        .setThumbnail(imageUrl ?? null)
-        .addFields(
-          { name: 'Level', value: `${userPokemon.level}`, inline: true },
-          { name: 'Nature', value: nature, inline: true },
-          { name: 'ID', value: `#${userPokemon.id.slice(0, 8)}`, inline: true }
-        );
-
-      await interaction.editReply({ embeds: [catchEmbed] });
-
-      const caughtEmbed = new EmbedBuilder()
-        .setColor(isShiny ? 0xffd700 : 0x00ff00)
-        .setTitle(isShiny ? `✨ Shiny ${pokemon.nameDisplay} was caught!` : `${pokemon.nameDisplay} was caught!`)
-        .setDescription(`<@${interaction.user.id}> caught the ${isShiny ? 'Shiny ' : ''}${pokemon.nameDisplay}!`)
-        .setImage(imageUrl ?? null);
-
-      await msg.edit({ embeds: [caughtEmbed], components: [] }).catch(() => {});
     });
 
     collector.on('end', async () => {
-      client.activeSpawns.delete(msg.id);
+      await client.redis.del([spawnKey, guildSpawnKey]);
       const dbSpawn = await client.prisma.spawn.findUnique({ where: { id: spawn.id } });
       if (dbSpawn && !dbSpawn.isCaught) {
         await msg.edit({

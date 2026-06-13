@@ -149,6 +149,4 @@ export async function saveBattleResult(
       rankedPoints: isRanked ? { decrement: 15 } : undefined,
     },
   });
-
-  client.activeBattles.delete(state.id);
 }

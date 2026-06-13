@@ -18,14 +18,28 @@ export async function getOrCreateUser(prisma: PrismaClient, userId: string) {
 }
 
 export async function addBalance(prisma: PrismaClient, userId: string, amount: number) {
-  return prisma.user.update({
-    where: { id: userId },
-    data: {
-      balance: { increment: amount },
-      totalEarned: amount > 0 ? { increment: amount } : undefined,
-      totalSpent: amount < 0 ? { increment: Math.abs(amount) } : undefined,
-    },
-  });
+  if (amount < 0) {
+    const absAmount = Math.abs(amount);
+    return prisma.$transaction(async (tx) => {
+      const u = await tx.user.findUnique({ where: { id: userId } });
+      if (!u || u.balance < absAmount) throw new Error('INSUFFICIENT_FUNDS');
+      return tx.user.update({
+        where: { id: userId },
+        data: {
+          balance: { decrement: absAmount },
+          totalSpent: { increment: absAmount },
+        },
+      });
+    });
+  } else {
+    return prisma.user.update({
+      where: { id: userId },
+      data: {
+        balance: { increment: amount },
+        totalEarned: amount > 0 ? { increment: amount } : undefined,
+      },
+    });
+  }
 }
 
 export async function transferBalance(
@@ -34,10 +48,13 @@ export async function transferBalance(
   toId: string,
   amount: number
 ) {
-  return prisma.$transaction([
-    prisma.user.update({ where: { id: fromId }, data: { balance: { decrement: amount }, totalSpent: { increment: amount } } }),
-    prisma.user.update({ where: { id: toId }, data: { balance: { increment: amount }, totalEarned: { increment: amount } } }),
-  ]);
+  return prisma.$transaction(async (tx) => {
+    const fromUser = await tx.user.findUnique({ where: { id: fromId } });
+    if (!fromUser || fromUser.balance < amount) throw new Error('INSUFFICIENT_FUNDS');
+    
+    await tx.user.update({ where: { id: fromId }, data: { balance: { decrement: amount }, totalSpent: { increment: amount } } });
+    return tx.user.update({ where: { id: toId }, data: { balance: { increment: amount }, totalEarned: { increment: amount } } });
+  });
 }
 
 export async function addXp(prisma: PrismaClient, userId: string, xp: number) {

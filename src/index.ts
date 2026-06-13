@@ -43,14 +43,9 @@ async function main() {
   }) as BotClient;
 
   client.commands = new Collection<string, Command>();
-  client.cooldowns = new Collection<string, Collection<string, number>>();
   client.prisma = prisma;
   client.redis = redis;
   client.logger = logger;
-  client.spawnTimers = new Map();
-  client.activeSpawns = new Map();
-  client.activeBattles = new Map();
-  client.activeTrades = new Map();
 
   // Load commands
   const commandsPath = path.join(__dirname, 'commands');

@@ -32,28 +32,18 @@ async function handleCommand(interaction: ChatInputCommandInteraction, client: B
 
     // Cooldown check
     if (command.cooldown) {
-      const { Collection: DiscordCollection } = await import('discord.js');
-      if (!client.cooldowns.has(command.data.name)) {
-        client.cooldowns.set(command.data.name, new Collection<string, number>());
+      const { checkCooldown, setCooldown } = await import('../utils/cooldown.js');
+      const { onCooldown, remaining } = await checkCooldown(client, interaction.user.id, command.data.name, command.cooldown);
+      
+      if (onCooldown) {
+        await interaction.reply({
+          embeds: [errorEmbed('Cooldown', `Please wait **${remaining}s** before using \`/${command.data.name}\` again.`)],
+          ephemeral: true,
+        });
+        return;
       }
-      const now = Date.now();
-      const timestamps = client.cooldowns.get(command.data.name)!;
-      const cooldownMs = (command.cooldown ?? 3) * 1000;
-
-      if (timestamps.has(interaction.user.id)) {
-        const expiry = timestamps.get(interaction.user.id)! + cooldownMs;
-        if (now < expiry) {
-          const remaining = ((expiry - now) / 1000).toFixed(1);
-          await interaction.reply({
-            embeds: [errorEmbed('Cooldown', `Please wait **${remaining}s** before using \`/${command.data.name}\` again.`)],
-            ephemeral: true,
-          });
-          return;
-        }
-      }
-
-      timestamps.set(interaction.user.id, now);
-      setTimeout(() => timestamps.delete(interaction.user.id), cooldownMs);
+      
+      await setCooldown(client, interaction.user.id, command.data.name, command.cooldown);
     }
 
     await command.execute(interaction, client);

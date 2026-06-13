@@ -1,4 +1,5 @@
 import { Message, EmbedBuilder } from 'discord.js';
+import { Prisma } from '@prisma/client';
 import type { BotClient } from '../types/index.js';
 
 const SCAM_PATTERNS = [
@@ -24,14 +25,16 @@ export async function checkAutoMod(message: Message, client: BotClient) {
     for (const pattern of SCAM_PATTERNS) {
       if (pattern.test(message.content)) {
         await message.delete().catch(() => {});
-        await message.channel.send({
-          embeds: [
-            new EmbedBuilder()
-              .setColor(0xff0000)
-              .setTitle('🚫 Scam Detected')
-              .setDescription(`<@${message.author.id}> A potential scam link was detected and removed.`),
-          ],
-        });
+        if (message.channel.isSendable()) {
+          await message.channel.send({
+            embeds: [
+              new EmbedBuilder()
+                .setColor(0xff0000)
+                .setTitle('🚫 Scam Detected')
+                .setDescription(`<@${message.author.id}> A potential scam link was detected and removed.`),
+            ],
+          });
+        }
         await autoWarn(client, message.guild.id, message.author.id, client.user!.id, 'Auto-mod: Scam link detected');
         return;
       }
@@ -45,21 +48,25 @@ export async function checkAutoMod(message: Message, client: BotClient) {
     if (count === 1) await client.redis.pExpire(key, SPAM_TIME_WINDOW);
 
     if (count >= SPAM_MESSAGE_LIMIT) {
-      await message.channel.bulkDelete(
+      if ('bulkDelete' in message.channel) {
+        await message.channel.bulkDelete(
         await message.channel.messages.fetch({ limit: 10 }).then(
           (msgs) => msgs.filter((m) => m.author.id === message.author.id).first(SPAM_MESSAGE_LIMIT)
         )
-      ).catch(() => {});
+        ).catch(() => {});
+      }
 
       await message.member.timeout(60000, 'Auto-mod: Spam').catch(() => {});
-      await message.channel.send({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0xff8c00)
-            .setTitle('⚠️ Spam Detected')
-            .setDescription(`<@${message.author.id}> has been timed out for spamming.`),
-        ],
-      });
+      if (message.channel.isSendable()) {
+        await message.channel.send({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0xff8c00)
+              .setTitle('⚠️ Spam Detected')
+              .setDescription(`<@${message.author.id}> has been timed out for spamming.`),
+          ],
+        });
+      }
     }
   }
 }
@@ -115,6 +122,6 @@ export async function logModAction(
   await channel.send({ embeds: [embed] }).catch(() => {});
 
   await client.prisma.auditLog.create({
-    data: { guildId, action, targetId, moderatorId, reason, metadata: extra ?? {} },
+    data: { guildId, action, targetId, moderatorId, reason, metadata: (extra ?? {}) as Prisma.InputJsonValue },
   });
 }

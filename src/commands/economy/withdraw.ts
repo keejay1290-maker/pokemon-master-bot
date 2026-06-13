@@ -14,9 +14,28 @@ const command: Command = {
     const raw = interaction.options.getString('amount', true);
     const amount = raw.toLowerCase() === 'all' ? user.bankBalance : parseInt(raw);
     if (isNaN(amount) || amount <= 0) { await interaction.reply({ content: 'Invalid amount.', ephemeral: true }); return; }
-    if (amount > user.bankBalance) { await interaction.reply({ content: `You only have **${formatNumber(user.bankBalance)}** PokéCoins in your bank.`, ephemeral: true }); return; }
-    await client.prisma.user.update({ where: { id: interaction.user.id }, data: { bankBalance: { decrement: amount }, balance: { increment: amount } } });
-    await interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00ff00).setTitle('🏦 Withdrawn').setDescription(`Withdrew **${formatNumber(amount)} PokéCoins** to your wallet.`)] });
+
+    try {
+      await client.prisma.$transaction(async (tx) => {
+        const currentUser = await tx.user.findUnique({ where: { id: interaction.user.id } });
+        if (!currentUser || currentUser.bankBalance < amount) {
+          throw new Error('INSUFFICIENT_FUNDS');
+        }
+        await tx.user.update({
+          where: { id: interaction.user.id },
+          data: { bankBalance: { decrement: amount }, balance: { increment: amount } }
+        });
+      });
+      await interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00ff00).setTitle('🏦 Withdrawn').setDescription(`Withdrew **${formatNumber(amount)} PokéCoins** to your wallet.`)] });
+    } catch (error: any) {
+      if (error.message === 'INSUFFICIENT_FUNDS') {
+        const currentBankBalance = (await client.prisma.user.findUnique({ where: { id: interaction.user.id } }))?.bankBalance ?? 0;
+        await interaction.reply({ content: `You only have **${formatNumber(currentBankBalance)}** PokéCoins in your bank.`, ephemeral: true });
+      } else {
+        console.error(error);
+        await interaction.reply({ content: 'An error occurred during withdrawal.', ephemeral: true });
+      }
+    }
   },
 };
 export default command;

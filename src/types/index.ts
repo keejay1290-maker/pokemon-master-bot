@@ -6,24 +6,22 @@ import {
   AutocompleteInteraction,
   PermissionResolvable,
 } from 'discord.js';
+import type {
+  SlashCommandOptionsOnlyBuilder,
+  SlashCommandSubcommandsOnlyBuilder,
+} from '@discordjs/builders';
 import { PrismaClient } from '@prisma/client';
-import { Redis } from 'redis';
 import type { Logger } from 'winston';
 
 export interface BotClient extends Client {
   commands: Collection<string, Command>;
-  cooldowns: Collection<string, Collection<string, number>>;
   prisma: PrismaClient;
   redis: ReturnType<typeof import('redis').createClient>;
   logger: Logger;
-  spawnTimers: Map<string, NodeJS.Timeout>;
-  activeSpawns: Map<string, ActiveSpawn>;
-  activeBattles: Map<string, BattleState>;
-  activeTrades: Map<string, TradeState>;
 }
 
 export interface Command {
-  data: SlashCommandBuilder | Omit<SlashCommandBuilder, 'addSubcommand' | 'addSubcommandGroup'>;
+  data: SlashCommandBuilder | SlashCommandOptionsOnlyBuilder | SlashCommandSubcommandsOnlyBuilder;
   execute: (interaction: ChatInputCommandInteraction, client: BotClient) => Promise<void>;
   autocomplete?: (interaction: AutocompleteInteraction, client: BotClient) => Promise<void>;
   cooldown?: number;

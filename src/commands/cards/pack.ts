@@ -32,22 +32,36 @@ const command: Command = {
       return;
     }
 
-    const user = await client.prisma.user.findUnique({ where: { id: interaction.user.id } });
-    if (!user || user.balance < PACK_COST) {
-      await interaction.editReply(`❌ You need **${formatNumber(PACK_COST)} PokéCoins** to open a pack. You have ${formatNumber(user?.balance ?? 0)}.`);
+    try {
+      await client.prisma.$transaction(async (tx) => {
+        const u = await tx.user.findUnique({ where: { id: interaction.user.id } });
+        if (!u || u.balance < PACK_COST) throw new Error('INSUFFICIENT_FUNDS');
+        await tx.user.update({
+          where: { id: interaction.user.id },
+          data: { balance: { decrement: PACK_COST }, totalSpent: { increment: PACK_COST } },
+        });
+      });
+    } catch (e: any) {
+      if (e.message === 'INSUFFICIENT_FUNDS') {
+        const user = await client.prisma.user.findUnique({ where: { id: interaction.user.id } });
+        await interaction.editReply(`❌ You need **${formatNumber(PACK_COST)} PokéCoins** to open a pack. You have ${formatNumber(user?.balance ?? 0)}.`);
+      } else {
+        console.error(e);
+        await interaction.editReply('❌ An error occurred.');
+      }
       return;
     }
 
     const cards = await openPack(client, setId);
     if (cards.length === 0) {
-      await interaction.editReply('❌ Could not fetch cards. Try again later.');
+      // Refund
+      await client.prisma.user.update({
+        where: { id: interaction.user.id },
+        data: { balance: { increment: PACK_COST }, totalSpent: { decrement: PACK_COST } },
+      });
+      await interaction.editReply('❌ Could not fetch cards. Try again later. (You have been refunded)');
       return;
     }
-
-    await client.prisma.user.update({
-      where: { id: interaction.user.id },
-      data: { balance: { decrement: PACK_COST }, totalSpent: { increment: PACK_COST } },
-    });
     await setCooldown(client, interaction.user.id, 'pack', PACK_COOLDOWN);
 
     // Save cards to collection
