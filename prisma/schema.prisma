@@ -1,0 +1,650 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Guild {
+  id                    String    @id
+  name                  String
+  ownerId               String
+  prefix                String    @default("/")
+  setupComplete         Boolean   @default(false)
+  setupType             String?
+
+  // Channel IDs
+  welcomeChannelId      String?
+  announcementsChannelId String?
+  pokemonChatChannelId  String?
+  pokemonBattlesChannelId String?
+  pokemonTradesChannelId  String?
+  pokemonShowcaseChannelId String?
+  pokeSpawnsChannelId   String?
+  pokecoinsChannelId    String?
+  giveawaysChannelId    String?
+  botCommandsChannelId  String?
+  trainerHubChannelId   String?
+  dailyRewardsChannelId String?
+  gymChallengesChannelId String?
+  eliteFourChannelId    String?
+  marketplaceChannelId  String?
+  modLogChannelId       String?
+
+  // Welcome settings
+  welcomeEnabled        Boolean   @default(false)
+  welcomeMessage        String?
+  welcomeEmbed          Json?
+
+  // Moderation settings
+  modEnabled            Boolean   @default(true)
+  antiSpamEnabled       Boolean   @default(true)
+  antiRaidEnabled       Boolean   @default(true)
+  scamDetectionEnabled  Boolean   @default(true)
+  inviteFilterEnabled   Boolean   @default(false)
+  autoModEnabled        Boolean   @default(false)
+
+  // Economy settings
+  dailyReward           Int       @default(500)
+  weeklyReward          Int       @default(2500)
+  monthlyReward         Int       @default(10000)
+  workCooldown          Int       @default(3600)
+  fishCooldown          Int       @default(1800)
+  huntCooldown          Int       @default(3600)
+  robEnabled            Boolean   @default(true)
+  robSuccessRate        Float     @default(0.4)
+  robCooldown           Int       @default(86400)
+  robMaxLoss            Int       @default(1000)
+  robProtectionHours    Int       @default(24)
+
+  // Spawn settings
+  spawnEnabled          Boolean   @default(true)
+  spawnRate             Int       @default(5)
+  spawnCooldown         Int       @default(30)
+  legendaryRate         Float     @default(0.001)
+  mythicalRate          Float     @default(0.0005)
+  shinyRate             Float     @default(0.002)
+
+  // Battle settings
+  battleEnabled         Boolean   @default(true)
+  battleTimeout         Int       @default(300)
+  rankedEnabled         Boolean   @default(true)
+
+  // Event settings
+  currentEvent          String?
+  eventStartedAt        DateTime?
+  eventEndsAt           DateTime?
+
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  users                 GuildUser[]
+  warnings              Warning[]
+  giveaways             Giveaway[]
+  spawns                Spawn[]
+  auditLogs             AuditLog[]
+  marketListings        MarketListing[]
+
+  @@map("guilds")
+}
+
+model User {
+  id              String    @id
+  username        String
+  discriminator   String    @default("0")
+  avatarUrl       String?
+
+  // Trainer stats
+  trainerLevel    Int       @default(1)
+  trainerXp       Int       @default(0)
+  trainerTitle    String    @default("Rookie Trainer")
+
+  // Economy
+  balance         Int       @default(0)
+  bankBalance     Int       @default(0)
+  totalEarned     Int       @default(0)
+  totalSpent      Int       @default(0)
+
+  // Streaks
+  dailyStreak     Int       @default(0)
+  weeklyStreak    Int       @default(0)
+  monthlyStreak   Int       @default(0)
+  lastDaily       DateTime?
+  lastWeekly      DateTime?
+  lastMonthly     DateTime?
+  lastWork        DateTime?
+  lastFish        DateTime?
+  lastHunt        DateTime?
+  lastBeg         DateTime?
+  lastRob         DateTime?
+
+  // Battle stats
+  battlesWon      Int       @default(0)
+  battlesLost     Int       @default(0)
+  rankedPoints    Int       @default(1000)
+  rankedTier      String    @default("Bronze")
+  season          Int       @default(1)
+
+  // Collection stats
+  pokemonCaught   Int       @default(0)
+  shinyCaught     Int       @default(0)
+  legendariesCaught Int     @default(0)
+  cardsCollected  Int       @default(0)
+
+  // Rob protection
+  lastRobbed      DateTime?
+
+  // Flags
+  isBanned        Boolean   @default(false)
+  banReason       String?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  guildUsers      GuildUser[]
+  pokemon         UserPokemon[]
+  cards           UserCard[]
+  achievements    UserAchievement[]
+  activeTeam      Team[]
+  quests          UserQuest[]
+  battlesAsChallenger Battle[] @relation("Challenger")
+  battlesAsOpponent   Battle[] @relation("Opponent")
+  tradesInitiated Trade[] @relation("TradeInitiator")
+  tradesReceived  Trade[] @relation("TradeReceiver")
+  giveawayEntries GiveawayEntry[]
+  marketListings  MarketListing[]
+  marketPurchases MarketPurchase[]
+  jobs            UserJob[]
+
+  @@map("users")
+}
+
+model GuildUser {
+  id          String    @id @default(cuid())
+  guildId     String
+  userId      String
+  guild       Guild     @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  xp          Int       @default(0)
+  level       Int       @default(1)
+  messages    Int       @default(0)
+
+  isMuted     Boolean   @default(false)
+  muteExpires DateTime?
+  isBanned    Boolean   @default(false)
+
+  joinedAt    DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  warnings    Warning[]
+
+  @@unique([guildId, userId])
+  @@map("guild_users")
+}
+
+model Warning {
+  id          String    @id @default(cuid())
+  guildId     String
+  userId      String
+  moderatorId String
+  reason      String
+  guild       Guild     @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  guildUser   GuildUser @relation(fields: [guildId, userId], references: [guildId, userId])
+  createdAt   DateTime  @default(now())
+
+  @@map("warnings")
+}
+
+model Pokemon {
+  id              Int       @id
+  name            String
+  nameDisplay     String
+  description     String?
+  generation      Int
+  isLegendary     Boolean   @default(false)
+  isMythical      Boolean   @default(false)
+  isUltraBeast    Boolean   @default(false)
+  isParadox       Boolean   @default(false)
+
+  // Types
+  type1           String
+  type2           String?
+
+  // Base Stats
+  hp              Int
+  attack          Int
+  defense         Int
+  spAttack        Int
+  spDefense       Int
+  speed           Int
+  baseStatTotal   Int
+
+  // Physical
+  height          Float
+  weight          Float
+
+  // Abilities
+  ability1        String
+  ability2        String?
+  hiddenAbility   String?
+
+  // Images
+  spriteUrl       String?
+  artworkUrl      String?
+  shinySpriteUrl  String?
+  shinyArtworkUrl String?
+
+  // Rarity
+  rarity          String    @default("Common")
+  spawnWeight     Float     @default(100)
+  catchRate       Int       @default(45)
+
+  // Evolution
+  evolvesFromId   Int?
+  evolvesFrom     Pokemon?  @relation("Evolution", fields: [evolvesFromId], references: [id])
+  evolvesInto     Pokemon[] @relation("Evolution")
+  evolutionLevel  Int?
+  evolutionItem   String?
+  evolutionCondition String?
+
+  // Forms
+  formName        String?
+  baseFormId      Int?
+
+  userPokemon     UserPokemon[]
+  moves           PokemonMove[]
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@map("pokemon")
+}
+
+model PokemonMove {
+  id          String    @id @default(cuid())
+  pokemonId   Int
+  moveName    String
+  moveType    String
+  power       Int?
+  accuracy    Int?
+  pp          Int
+  category    String
+  description String?
+  isLearnset  Boolean   @default(true)
+  learnLevel  Int?
+  pokemon     Pokemon   @relation(fields: [pokemonId], references: [id], onDelete: Cascade)
+
+  @@map("pokemon_moves")
+}
+
+model UserPokemon {
+  id          String    @id @default(cuid())
+  userId      String
+  pokemonId   Int
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  pokemon     Pokemon   @relation(fields: [pokemonId], references: [id])
+
+  nickname    String?
+  level       Int       @default(1)
+  xp          Int       @default(0)
+  isShiny     Boolean   @default(false)
+  isFavorite  Boolean   @default(false)
+  isInTeam    Boolean   @default(false)
+  teamSlot    Int?
+
+  // IVs (0-31)
+  ivHp        Int       @default(0)
+  ivAttack    Int       @default(0)
+  ivDefense   Int       @default(0)
+  ivSpAttack  Int       @default(0)
+  ivSpDefense Int       @default(0)
+  ivSpeed     Int       @default(0)
+
+  // EVs (0-252, total 510)
+  evHp        Int       @default(0)
+  evAttack    Int       @default(0)
+  evDefense   Int       @default(0)
+  evSpAttack  Int       @default(0)
+  evSpDefense Int       @default(0)
+  evSpeed     Int       @default(0)
+
+  // Battle stats
+  currentHp   Int?
+  statusEffect String?
+
+  heldItem    String?
+  nature      String    @default("Hardy")
+  moves       String[]  @default([])
+
+  caughtAt    DateTime  @default(now())
+  caughtIn    String    @default("Poke Ball")
+
+  tradeListing TradePokemon[]
+  teamSlots   TeamSlot[]
+
+  @@map("user_pokemon")
+}
+
+model Team {
+  id        String    @id @default(cuid())
+  userId    String
+  name      String    @default("My Team")
+  isActive  Boolean   @default(false)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  slots     TeamSlot[]
+  createdAt DateTime  @default(now())
+
+  @@map("teams")
+}
+
+model TeamSlot {
+  id            String      @id @default(cuid())
+  teamId        String
+  userPokemonId String
+  slot          Int
+  team          Team        @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  userPokemon   UserPokemon @relation(fields: [userPokemonId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, slot])
+  @@map("team_slots")
+}
+
+model Card {
+  id          String    @id
+  name        String
+  supertype   String
+  subtypes    String[]
+  hp          String?
+  types       String[]
+  setId       String
+  setName     String
+  number      String
+  rarity      String
+  artist      String?
+  imageSmall  String?
+  imageLarge  String?
+  pullRate    Float     @default(1.0)
+  marketValue Float?
+
+  userCards   UserCard[]
+
+  @@map("cards")
+}
+
+model UserCard {
+  id        String    @id @default(cuid())
+  userId    String
+  cardId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  card      Card      @relation(fields: [cardId], references: [id])
+  quantity  Int       @default(1)
+  isFoil    Boolean   @default(false)
+  obtainedAt DateTime @default(now())
+
+  @@unique([userId, cardId, isFoil])
+  @@map("user_cards")
+}
+
+model Battle {
+  id              String    @id @default(cuid())
+  challengerId    String
+  opponentId      String
+  guildId         String
+  type            String    @default("unranked")
+  status          String    @default("pending")
+  winnerId        String?
+  challenger      User      @relation("Challenger", fields: [challengerId], references: [id])
+  opponent        User      @relation("Opponent", fields: [opponentId], references: [id])
+  
+  challengerTeam  Json?
+  opponentTeam    Json?
+  battleLog       Json?
+  turns           Int       @default(0)
+  
+  rankedPointsChange Int?
+  
+  startedAt       DateTime?
+  endedAt         DateTime?
+  createdAt       DateTime  @default(now())
+
+  @@map("battles")
+}
+
+model Trade {
+  id            String    @id @default(cuid())
+  initiatorId   String
+  receiverId    String
+  status        String    @default("pending")
+  initiator     User      @relation("TradeInitiator", fields: [initiatorId], references: [id])
+  receiver      User      @relation("TradeReceiver", fields: [receiverId], references: [id])
+  
+  initiatorCoins Int      @default(0)
+  receiverCoins  Int      @default(0)
+  
+  initiatorItems Json?
+  receiverItems  Json?
+  
+  initiatorConfirmed Boolean @default(false)
+  receiverConfirmed  Boolean @default(false)
+  
+  expiresAt     DateTime
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+
+  pokemon       TradePokemon[]
+
+  @@map("trades")
+}
+
+model TradePokemon {
+  id            String      @id @default(cuid())
+  tradeId       String
+  userPokemonId String
+  offeredBy     String
+  trade         Trade       @relation(fields: [tradeId], references: [id], onDelete: Cascade)
+  userPokemon   UserPokemon @relation(fields: [userPokemonId], references: [id])
+
+  @@map("trade_pokemon")
+}
+
+model Achievement {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  description String
+  category    String
+  icon        String
+  xpReward    Int       @default(0)
+  coinReward  Int       @default(0)
+  rarity      String    @default("Common")
+  condition   Json
+
+  userAchievements UserAchievement[]
+
+  @@map("achievements")
+}
+
+model UserAchievement {
+  id            String      @id @default(cuid())
+  userId        String
+  achievementId String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievement   Achievement @relation(fields: [achievementId], references: [id])
+  earnedAt      DateTime    @default(now())
+
+  @@unique([userId, achievementId])
+  @@map("user_achievements")
+}
+
+model Quest {
+  id          String    @id @default(cuid())
+  name        String
+  description String
+  type        String
+  category    String
+  xpReward    Int       @default(0)
+  coinReward  Int       @default(0)
+  requirement Json
+  resetPeriod String
+
+  userQuests  UserQuest[]
+
+  @@map("quests")
+}
+
+model UserQuest {
+  id        String    @id @default(cuid())
+  userId    String
+  questId   String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  quest     Quest     @relation(fields: [questId], references: [id])
+  progress  Int       @default(0)
+  completed Boolean   @default(false)
+  claimed   Boolean   @default(false)
+  resetAt   DateTime
+
+  @@unique([userId, questId])
+  @@map("user_quests")
+}
+
+model Giveaway {
+  id          String    @id @default(cuid())
+  guildId     String
+  channelId   String
+  messageId   String?
+  hostId      String
+  title       String
+  description String?
+  guild       Guild     @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  
+  prizeType   String
+  prizeData   Json
+  
+  winners     Int       @default(1)
+  winnerIds   String[]  @default([])
+  
+  status      String    @default("active")
+  
+  endsAt      DateTime
+  endedAt     DateTime?
+  createdAt   DateTime  @default(now())
+
+  entries     GiveawayEntry[]
+
+  @@map("giveaways")
+}
+
+model GiveawayEntry {
+  id          String    @id @default(cuid())
+  giveawayId  String
+  userId      String
+  giveaway    Giveaway  @relation(fields: [giveawayId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  enteredAt   DateTime  @default(now())
+
+  @@unique([giveawayId, userId])
+  @@map("giveaway_entries")
+}
+
+model Spawn {
+  id          String    @id @default(cuid())
+  guildId     String
+  channelId   String
+  messageId   String?
+  pokemonId   Int
+  isShiny     Boolean   @default(false)
+  isCaught    Boolean   @default(false)
+  caughtById  String?
+  guild       Guild     @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  
+  spawnedAt   DateTime  @default(now())
+  caughtAt    DateTime?
+  expiresAt   DateTime
+
+  @@map("spawns")
+}
+
+model MarketListing {
+  id          String    @id @default(cuid())
+  sellerId    String
+  guildId     String
+  seller      User      @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  guild       Guild     @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  
+  type        String
+  itemData    Json
+  price       Int
+  quantity    Int       @default(1)
+  
+  status      String    @default("active")
+  
+  isAuction   Boolean   @default(false)
+  currentBid  Int?
+  buyoutPrice Int?
+  bids        Json?
+  auctionEndsAt DateTime?
+  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  purchases   MarketPurchase[]
+
+  @@map("market_listings")
+}
+
+model MarketPurchase {
+  id          String        @id @default(cuid())
+  listingId   String
+  buyerId     String
+  listing     MarketListing @relation(fields: [listingId], references: [id])
+  buyer       User          @relation(fields: [buyerId], references: [id])
+  price       Int
+  purchasedAt DateTime      @default(now())
+
+  @@map("market_purchases")
+}
+
+model UserJob {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobName     String
+  lastWorked  DateTime?
+  totalEarned Int       @default(0)
+  timesWorked Int       @default(0)
+  level       Int       @default(1)
+
+  @@unique([userId, jobName])
+  @@map("user_jobs")
+}
+
+model AuditLog {
+  id          String    @id @default(cuid())
+  guildId     String
+  guild       Guild     @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  action      String
+  targetId    String?
+  moderatorId String?
+  reason      String?
+  metadata    Json?
+  createdAt   DateTime  @default(now())
+
+  @@map("audit_logs")
+}
+
+model Event {
+  id          String    @id @default(cuid())
+  name        String
+  description String
+  type        String
+  startDate   DateTime
+  endDate     DateTime
+  isActive    Boolean   @default(false)
+  rewards     Json?
+  bonuses     Json?
+  createdAt   DateTime  @default(now())
+
+  @@map("events")
+}

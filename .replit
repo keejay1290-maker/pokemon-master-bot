@@ -1,0 +1,16 @@
+run = "npm run dev"
+entrypoint = "src/index.ts"
+
+[nix]
+channel = "stable-23_11"
+
+[env]
+NODE_ENV = "development"
+
+[deployment]
+run = ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
+build = ["sh", "-c", "npm ci && npx prisma generate && npm run build"]
+
+[[ports]]
+localPort = 3001
+externalPort = 80
