@@ -11,7 +11,9 @@ import { apiRouter } from './routes/api.js';
 
 export async function startDashboard(client: BotClient) {
   const app = express();
-  const PORT = parseInt(process.env.DASHBOARD_PORT ?? '3001', 10);
+  const PORT = parseInt(process.env.PORT ?? process.env.DASHBOARD_PORT ?? '3001', 10);
+
+  app.get('/health', (_req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
   app.use(helmet({ contentSecurityPolicy: false }));
   app.use(cors({ origin: process.env.DASHBOARD_URL, credentials: true }));

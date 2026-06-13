@@ -18,6 +18,7 @@ FROM node:20-alpine AS production
 RUN apk add --no-cache openssl cairo pango libjpeg-turbo giflib librsvg
 
 WORKDIR /app
+RUN mkdir -p /app/logs
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules

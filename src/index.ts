@@ -24,9 +24,13 @@ async function main() {
   logger.info('Database connected');
 
   const redis = createClient({ url: process.env.REDIS_URL || 'redis://localhost:6379' });
-  redis.on('error', (err) => logger.error('Redis error:', err));
-  await redis.connect();
-  logger.info('Redis connected');
+  redis.on('error', (err) => logger.warn('Redis error (non-fatal):', err));
+  try {
+    await redis.connect();
+    logger.info('Redis connected');
+  } catch (err) {
+    logger.warn('Redis unavailable — running without cache (non-fatal)');
+  }
 
   const client = new (require('discord.js').Client)({
     intents: [
@@ -54,6 +58,13 @@ async function main() {
   // Register events
   registerEvents(client);
 
+  // Start dashboard before login so /health responds immediately to Railway healthcheck
+  if (process.env.NODE_ENV !== 'test') {
+    startDashboard(client).catch((err) =>
+      logger.error('Dashboard failed to start:', err)
+    );
+  }
+
   // Login
   await client.login(process.env.DISCORD_TOKEN);
   logger.info('Bot logged in');
@@ -63,12 +74,6 @@ async function main() {
     logger.info(`Bot ready as ${client.user?.tag}`);
     startSpawnService(client);
     startJobService(client);
-
-    if (process.env.NODE_ENV !== 'test') {
-      startDashboard(client).catch((err) =>
-        logger.error('Dashboard failed to start:', err)
-      );
-    }
   });
 
   // Graceful shutdown
