@@ -23,14 +23,30 @@ async function main() {
   await prisma.$connect();
   logger.info('Database connected');
 
-  const redis = createClient({ url: process.env.REDIS_URL || 'redis://localhost:6379' });
-  redis.on('error', (err) => logger.warn('Redis error (non-fatal):', err));
-  try {
-    await redis.connect();
-    logger.info('Redis connected');
-  } catch (err) {
-    logger.warn('Redis unavailable — running without cache (non-fatal)');
-  }
+  // Redis is OPTIONAL. Never `await` the connect — redis v4's default reconnect
+  // strategy keeps connect() pending forever on ECONNREFUSED, which previously
+  // blocked the entire startup (dashboard + Discord login) and caused Railway to
+  // see no listener (502) and kill the container with zero logs.
+  const redis = createClient({
+    url: process.env.REDIS_URL || 'redis://localhost:6379',
+    socket: {
+      connectTimeout: 5000,
+      // Stop retrying after a few attempts so we don't spam logs forever.
+      reconnectStrategy: (retries) => (retries > 5 ? false : Math.min(retries * 250, 2000)),
+    },
+  });
+  let redisErrorLogged = false;
+  redis.on('error', (err) => {
+    // Log the first error only; the reconnect loop would otherwise flood logs.
+    if (!redisErrorLogged) {
+      redisErrorLogged = true;
+      logger.warn('Redis error (non-fatal, running without cache):', (err as Error)?.message ?? err);
+    }
+  });
+  redis
+    .connect()
+    .then(() => logger.info('Redis connected'))
+    .catch(() => logger.warn('Redis unavailable — running without cache (non-fatal)'));
 
   const client = new (require('discord.js').Client)({
     intents: [
@@ -77,13 +93,15 @@ async function main() {
   });
 
   // Graceful shutdown
-  process.on('SIGTERM', async () => {
+  const shutdown = async () => {
     logger.info('Shutting down...');
-    await prisma.$disconnect();
-    await redis.disconnect();
+    try { await prisma.$disconnect(); } catch { /* ignore */ }
+    try { if (redis.isOpen) await redis.disconnect(); } catch { /* ignore */ }
     client.destroy();
     process.exit(0);
-  });
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 
   process.on('unhandledRejection', (err) => {
     logger.error('Unhandled rejection:', err);
@@ -98,7 +116,13 @@ function loadCommands(client: BotClient, dirPath: string) {
     const fullPath = path.join(dirPath, entry.name);
     if (entry.isDirectory()) {
       loadCommands(client, fullPath);
-    } else if (entry.name.endsWith('.js') || entry.name.endsWith('.ts')) {
+    } else if (
+      // Skip TypeScript declaration files (.d.ts) — in dist/ they end with
+      // `.ts` but contain no runtime export and previously logged 42 errors.
+      !entry.name.endsWith('.d.ts') &&
+      (entry.name.endsWith('.js') || entry.name.endsWith('.ts')) &&
+      !entry.name.endsWith('.map')
+    ) {
       try {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const cmd = require(fullPath);
