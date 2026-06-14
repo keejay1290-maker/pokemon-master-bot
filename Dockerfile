@@ -15,7 +15,16 @@ RUN npm run build
 
 FROM node:20-alpine AS production
 
-RUN apk add --no-cache openssl cairo pango libjpeg-turbo giflib librsvg
+# Runtime shared libraries for the canvas/sharp native addons. The builder
+# stage compiles against the -dev packages; the production image needs the
+# matching runtime libs (and their transitive deps) or node aborts with a
+# fatal signal at addon load, before any JS runs. libc6-compat provides the
+# glibc shim some prebuilt binaries expect on musl/alpine.
+RUN apk add --no-cache \
+    openssl \
+    cairo pango libjpeg-turbo giflib librsvg \
+    pixman fontconfig freetype fribidi harfbuzz \
+    libc6-compat
 
 WORKDIR /app
 RUN mkdir -p /app/logs
