@@ -1,120 +1,118 @@
-# Tasks — Next Session (S7)
-> Updated: 2026-06-14 (S6 wrap-up)
-> Bot: 57 commands, live on Railway, tsc clean
-> Start by reading: `docs/SESSION_HANDOFF_S6.md`
+# Tasks — Next Session (S8)
+> Updated: 2026-06-14 (S7 wrap-up)
+> Bot: 58 commands, live on Railway, tsc clean
+> Commit: 9b7ee88
+> Start by reading: `docs/SESSION_HANDOFF_S7.md`
 
 ---
 
 ## P0 — Production Issues
 
-None known. Bot is live and stable.
+None known.
 
 ---
 
-## P1 — High Value (Quick Wins)
+## P1 — High Value (Must Ship)
 
-### 1. Quest progress tracking
-**Why**: /quests shows quests but UserQuest.progress never increments. Users see quests that can never complete.
+### 1. UserInventory table + /buy persistence
+**Why**: `/buy` deducts coins but no item is stored. Shiny Charm, Amulet Coin, Repel — all purchased items have zero effect. Users are paying coins for nothing.
 **Effort**: 2h
-**File**: Create `src/services/questService.ts`
-**Logic**: `incrementQuestProgress(prisma, userId, type: QuestType, amount)` — update UserQuest.progress, check if >= requirement, complete and grant xpReward + coinReward. Call from: catch, battle win, /daily, /trade, /pack.
+**Steps**:
+1. Add `UserInventory` model to `prisma/schema.prisma` (userId, itemName, quantity, createdAt)
+2. `npx prisma migrate dev --name add_user_inventory`
+3. Update `/buy` to `upsert` UserInventory row after deducting coins
+4. Apply Shiny Charm: in `spawnService.selectRandomPokemon`, check `userInventory where itemName='shiny_charm'` — if owned, set `isShiny` roll to `shinyRate × 3`
+5. Apply Amulet Coin: in work/career commands, check inventory → double coins if owned
+6. Add `/inventory` command or tab in `/profile`
 
----
-
-### 2. Pokédex completion milestones
-**Why**: `User.pokemonCaught` is tracked but milestones are never rewarded. Pokétwo does this, it's expected.
-**Effort**: 30 min
-**File**: `src/services/spawnService.ts`
-**Logic**: After `pokemonCaught: { increment: 1 }`, check milestones (10, 25, 50, 100, 250, 500) → grant coins + call checkAndAwardAchievements. Add these as Achievement seeds if not already seeded.
-
----
-
-### 3. Evolution command
-**Why**: `evolutionLevel` and `evolvesFromId` exist on schema but no /evolve command.
+### 2. Evolution command
+**Why**: `Pokemon.evolutionLevel` and `evolvesFromId` exist in schema. Every mainline competitor has evolution. Expected feature.
 **Effort**: 2h
 **File**: `src/commands/pokemon/evolve.ts` (new)
-**Logic**: Find UserPokemon → check pokemon.evolvesFromId (chain) + evolutionLevel condition → update pokemonId to evolution → show before/after embed with art
+**Logic**:
+- Find user's Pokémon by ID
+- Check `pokemon.evolvesFromId` — if this pokemon has an evolution (`pokemon.evolvesInto[0]`)
+- Check level condition: `userPokemon.level >= evolution.evolutionLevel`
+- Update `userPokemon.pokemonId` to evolution's ID
+- Show before/after embed with artwork, stats comparison
+- Grant 100 XP on evolve
 
----
-
-### 4. Nature stat modifiers in battle
-**Why**: Every mainline Pokemon game applies natures. Currently stored but never used in battle.
-**Effort**: 30 min
-**File**: `src/utils/pokemon.ts calcPokemonStats()`
-**Logic**: Add `NATURE_MODIFIERS` map (25 natures). Each nature: +10% on one stat, -10% on another (Hardy/Docile/Serious/Bashful/Quirky are neutral). Apply in calcPokemonStats after base stat calc.
+### 3. TCG Phase 2 — Set Completion
+**Why**: Key collector milestone. Pokétwo equivalent is very popular.
+**Effort**: 3h
+**Files**: `src/commands/cards/sets.ts` (new), `src/commands/cards/setinfo.ts` (new)
+**Logic**:
+- `/sets` — list all TCG sets, show user's completion % (cards owned / total in set)
+- `/setinfo <set>` — show all cards in set, mark owned vs missing
+- On pack open: check if user now owns all cards in set → create `UserAchievement` for `SET_COMPLETE:{setId}`
 
 ---
 
 ## P2 — Medium Value
 
-### 5. Outbid DM notification
-**Why**: When a user is outbid, they get no notification. They may not check back before auction ends.
+### 4. Quest completion notification
+**Why**: When a quest completes, users get coins/XP silently with no feedback.
+**Effort**: 1h
+**File**: `src/services/questService.ts`
+**Logic**: `incrementQuestProgress` returns a list of completed quest names. Callers pass `channelId` to post a completion embed. Or: DM the user.
+
+### 5. /quests history subcommand
+**Why**: `/quests` only shows incomplete quests. Users can't see what they've completed.
+**Effort**: 30 min
+**File**: `src/commands/social/quests.ts`
+**Logic**: Add `history` subcommand — `UserQuest.findMany({ where: { userId, completed: true } })` with rewards shown
+
+### 6. Rank-up public announcement
+**Why**: `addXp()` returns `{ leveledUp }` but no message is posted when trainer title changes.
+**Effort**: 1h
+**File**: `src/services/userService.ts addXp()` — accept optional `channelId`, post embed when `getTrainerTitle(newLevel) !== getTrainerTitle(oldLevel)`
+
+### 7. Trainer title on /leaderboard
+**Why**: Leaderboard shows level only. Title adds personality.
+**Effort**: 15 min
+**File**: `src/commands/social/leaderboard.ts`
+**Change**: Add `getTrainerTitle(user.trainerLevel)` next to username in embed fields
+
+### 8. Outbid DM notification
+**Why**: Outbid users get no notification and may miss the auction end.
 **Effort**: 1h
 **File**: `src/commands/economy/auction.ts` bid subcommand
-**Logic**: When new bid arrives, find previous highest bidder from bids array → `client.users.fetch(prevBidder.userId)` → DM: "You were outbid on [item]! New bid: X PokéCoins."
-
----
-
-### 6. Market listing ownership validation
-**Why**: Users can list Pokémon/cards they don't own (itemData.name is free text).
-**Effort**: 1h
-**File**: `src/commands/economy/market.ts` handleList()
-**Logic**: When type='pokemon': `prisma.userPokemon.findFirst({ where: { userId, id: itemData.pokemonId } })`. When type='card': `prisma.userCard.findFirst({ where: { userId, cardId: itemData.cardId } })`. Require IDs instead of free text.
-
----
-
-### 7. UserInventory table + /buy persistence
-**Why**: `/buy` deducts coins but no item is stored. Shiny Charm, Amulet Coin, etc. have no effect.
-**Effort**: 1.5h (schema + buy wiring + inventory display)
-**Steps**: Add `UserInventory` model (userId, itemName, quantity) → `npx prisma migrate dev` → update `/buy` to upsert UserInventory → add `/inventory` command or add to /profile → apply Shiny Charm effect in spawnService
-
----
-
-### 8. TCG Set completion tracking (Phase 2)
-**Why**: Key TCG milestone — completing a full card set should reward the trainer.
-**Effort**: 4h
-**Files**: New `src/commands/cards/sets.ts` + `src/commands/cards/set.ts`
-**Logic**: `/sets` — list all TCG sets with user completion %. `/set <id>` — shows cards in set, marks owned/missing. On /pack open, check if user now owns all cards in set → create Achievement `SET_COMPLETE:{set_id}`.
+**Logic**: Find previous highest bidder from `bids` JSON array → DM: "You were outbid on [item]!"
 
 ---
 
 ## P3 — Polish
 
-### 9. /daily typo fix
-**File**: `src/commands/economy/daily.ts` line 4 (description)
-**Change**: "Claim your daily PokeCoin reward" → "Claim your daily PokéCoin reward"
-**Effort**: 2 min
+### 9. Market ownership validation
+**Why**: Users can list Pokémon/cards they don't own (itemData is free text).
+**File**: `src/commands/economy/market.ts` handleList()
+**Logic**: Require `pokemonId` or `cardId` param, validate ownership before listing
 
-### 10. Trainer title on /leaderboard
-**File**: `src/commands/social/leaderboard.ts`
-**Change**: Add `getTrainerTitle(user.trainerLevel)` next to username in embed
-**Effort**: 15 min
-
-### 11. Rank-up public announcement
-**File**: `src/services/userService.ts addXp()` + new `src/utils/rankAnnounce.ts`
-**Logic**: addXp() already returns `{ leveledUp }`. If `getTrainerTitle(newLevel) !== getTrainerTitle(oldLevel)`, post channel embed via `guild.systemChannelId` or config channel. Needs channelId passed to addXp callers.
-**Effort**: 1.5h
+### 10. /daily typo fix
+**File**: `src/commands/economy/daily.ts` line 10
+**Change**: `'Claim your daily PokeCoin reward'` → `'Claim your daily PokéCoin reward'`
 
 ---
 
-## P4 — Future Systems (Do NOT start without user confirmation)
+## P4 — Future (Confirm Before Starting)
 
-- **PokéPass** (battle pass) — needs 3+ tables + seasonal timer — S8+
-- **Gym system** — needs 8 gym configs, badge system — S9+
-- **Silhouette spawns** — messageCreate handler + Redis lock — S7 option if time allows
-- **Deck builder** (TCG Phase 5) — needs Deck table — S8+
+- **Gym System** — 8 gym configs, badge system, gym leader roles — S9+
+- **Silhouette spawns** — messageCreate shows silhouette image, users guess name — S8 option
+- **Deck Builder (TCG Phase 5)** — needs Deck + DeckCard tables — S9+
+- **PokéPass** (battle pass) — 40-tier seasonal progression — S9+
 
 ---
 
 ## Arch Reminders
 
-- **Never `trainerXp: { increment: N }` directly** — always `addXp(prisma, userId, N)`
-- **transferBalance** throws 'INSUFFICIENT_FUNDS' — always catch
-- **Commands auto-register** — file in src/commands/ = registered slash command
-- **Redis cooldown keys**: `cooldown:{userId}:{key}` — use checkCooldown()/setCooldown()
-- **checkAndAwardAchievements** — call after any stat increment (pokemonCaught, battlesWon, etc.)
+- `addXp(prisma, userId, N)` — never direct `trainerXp: { increment: N }`
+- `transferBalance` throws `'INSUFFICIENT_FUNDS'` — always catch
+- `checkAndAwardAchievements(client, userId, channelId?, guildId?)` — after any stat increment
+- `incrementQuestProgress(prisma, userId, type, amount)` — after catch/battle/daily/pack
+- Commands auto-register on bot startup — file in `src/commands/` = live command
+- **After adding commands**: always run `npm run deploy:commands` to register with Discord
 
-## Do NOT Do in S7
+## DO NOT Do in S8
 
 - Do not implement PokéPass
 - Do not implement Gym system
