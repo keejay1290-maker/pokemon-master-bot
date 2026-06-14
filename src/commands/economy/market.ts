@@ -122,6 +122,22 @@ async function handleList(interaction: ChatInputCommandInteraction, client: BotC
     return;
   }
 
+  // 5% listing fee deducted upfront to reduce spam
+  const fee = Math.max(1, Math.ceil(price * 0.05));
+  const seller = await client.prisma.user.findUnique({ where: { id: interaction.user.id } });
+  if (!seller || seller.balance < fee) {
+    await interaction.reply({
+      content: `❌ You need **${formatNumber(fee)} PokéCoins** (5% listing fee) to list this item. You have **${formatNumber(seller?.balance ?? 0)}**.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await client.prisma.user.update({
+    where: { id: interaction.user.id },
+    data: { balance: { decrement: fee }, totalSpent: { increment: fee } },
+  });
+
   const listing = await client.prisma.marketListing.create({
     data: {
       sellerId: interaction.user.id,
@@ -140,6 +156,7 @@ async function handleList(interaction: ChatInputCommandInteraction, client: BotC
       .setColor(0x00ff00)
       .setTitle('✅ Listing Created')
       .setDescription(`Your **${name}** (${type}) is listed for **${formatNumber(price)} PokéCoins**.\nListing ID: \`${shortId}\``)
+      .addFields({ name: '💸 Listing Fee', value: `${formatNumber(fee)} PokéCoins (5%)`, inline: true })
       .setTimestamp()],
   });
 }

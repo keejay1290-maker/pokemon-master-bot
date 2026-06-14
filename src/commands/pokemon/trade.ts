@@ -4,6 +4,7 @@ import {
 } from 'discord.js';
 import type { BotClient, Command } from '../../types/index.js';
 import { addXp } from '../../services/userService.js';
+import { checkAndAwardAchievements } from '../../services/achievementService.js';
 
 const command: Command = {
   data: new SlashCommandBuilder()
@@ -85,6 +86,10 @@ const command: Command = {
         addXp(client.prisma, interaction.user.id, 50),
         addXp(client.prisma, target.id, 50),
       ]);
+
+      // Check achievement milestones for both traders (fire-and-forget)
+      checkAndAwardAchievements(client, interaction.user.id, interaction.channelId, interaction.guild?.id).catch(() => {});
+      checkAndAwardAchievements(client, target.id).catch(() => {});
 
       await btn.update({
         embeds: [new EmbedBuilder().setColor(0x00ff00).setTitle('✅ Trade Complete!')

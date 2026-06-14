@@ -2,6 +2,7 @@ import type { BotClient, BattleState, BattlePokemon, StatStages, MoveData } from
 import { calcPokemonStats, getTypeEffectiveness, getEffectivenessText, TYPE_CHART } from '../utils/pokemon.js';
 import { PrismaClient } from '@prisma/client';
 import { addXp } from './userService.js';
+import { checkAndAwardAchievements } from './achievementService.js';
 
 export async function loadBattleTeam(
   prisma: PrismaClient,
@@ -153,4 +154,7 @@ export async function saveBattleResult(
   // Grant trainer XP via addXp so level-up logic fires
   const xpGain = 100 + state.turn * 2;
   await addXp(client.prisma, winnerId, xpGain);
+
+  // Check achievement milestones for the winner (fire-and-forget)
+  checkAndAwardAchievements(client, winnerId).catch(() => {});
 }

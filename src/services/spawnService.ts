@@ -3,6 +3,7 @@ import type { BotClient } from '../types/index.js';
 import { TypeColors } from '../utils/embeds.js';
 import { REDIS_KEYS, REDIS_TTLS, deserializeSpawn, serializeSpawn } from '../utils/redisKeys.js';
 import { addXp } from './userService.js';
+import { checkAndAwardAchievements } from './achievementService.js';
 
 const MESSAGE_SPAWN_CHANCE = 0.05;
 
@@ -186,6 +187,9 @@ export async function spawnPokemon(client: BotClient, guildId: string, channelId
         if (catchLeveledUp) catchEmbed.addFields({ name: '🎉 Trainer Level Up!', value: `You reached **Trainer Level ${catchNewLevel}**!`, inline: false });
 
         await interaction.editReply({ embeds: [catchEmbed] });
+
+        // Check achievement milestones after catch (fire-and-forget)
+        checkAndAwardAchievements(client, interaction.user.id, interaction.channelId, guildId).catch(() => {});
 
         const caughtEmbed = new EmbedBuilder()
           .setColor(isShiny ? 0xffd700 : 0x00ff00)

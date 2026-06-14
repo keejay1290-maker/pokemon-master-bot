@@ -40,7 +40,7 @@ const command: Command = {
         .setDescription(
           pokemon.map((up, i) =>
             `${(pg - 1) * PAGE_SIZE + i + 1}. ${up.isShiny ? '✨ ' : ''}${up.isFavorite ? '❤️ ' : ''}**${up.nickname ?? up.pokemon.nameDisplay}** ` +
-            `#${up.pokemon.id.toString().padStart(3, '0')} — Lv.${up.level} ${rarityEmoji(up.pokemon.rarity)}`
+            `#${up.pokemon.id.toString().padStart(3, '0')} — Lv.${up.level} ${rarityEmoji(up.pokemon.rarity)} | IV: ${Math.round((up.ivHp + up.ivAttack + up.ivDefense + up.ivSpAttack + up.ivSpDefense + up.ivSpeed) / 186 * 100)}%`
           ).join('\n')
         )
         .setFooter({ text: `Page ${pg}/${totalPages} • ${total} total Pokemon` });

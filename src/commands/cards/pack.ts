@@ -3,6 +3,7 @@ import type { BotClient, Command } from '../../types/index.js';
 import { openPack, fetchSets } from '../../services/pokemonTcgService.js';
 import { checkCooldown, setCooldown } from '../../utils/cooldown.js';
 import { formatNumber } from '../../utils/embeds.js';
+import { checkAndAwardAchievements } from '../../services/achievementService.js';
 
 const PACK_COST = 500;
 const PACK_COOLDOWN = 3600;
@@ -106,6 +107,9 @@ const command: Command = {
       where: { id: interaction.user.id },
       data: { cardsCollected: { increment: cards.length } },
     });
+
+    // Check achievement milestones after pack open (fire-and-forget)
+    checkAndAwardAchievements(client, interaction.user.id, interaction.channelId, interaction.guild?.id).catch(() => {});
 
     const rarityEmoji: Record<string, string> = {
       Common: '⚪', Uncommon: '🟢', Rare: '🔵', 'Rare Holo': '🔷',
