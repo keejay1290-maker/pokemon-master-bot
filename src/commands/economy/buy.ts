@@ -13,9 +13,9 @@ const SHOP_ITEMS = [
   { id: 'exp_candy_s', name: 'Exp. Candy S', price: 1000, emoji: '🍬', description: 'Gives your Pokémon experience points.' },
   { id: 'exp_candy_m', name: 'Exp. Candy M', price: 3000, emoji: '🍭', description: 'Gives more experience points.' },
   { id: 'exp_candy_xl', name: 'Exp. Candy XL', price: 10000, emoji: '🍫', description: 'Gives a large amount of experience.' },
-  { id: 'shiny_charm', name: 'Shiny Charm', price: 50000, emoji: '✨', description: 'Increases Shiny encounter rate.' },
+  { id: 'shiny_charm', name: 'Shiny Charm', price: 50000, emoji: '✨', description: 'Increases Shiny encounter rate (3× chance when you catch).' },
   { id: 'coin_case', name: 'Coin Case', price: 5000, emoji: '💰', description: 'Slightly increases daily reward.' },
-  { id: 'amulet_coin', name: 'Amulet Coin', price: 25000, emoji: '🪙', description: 'Doubles coins from work shifts.' },
+  { id: 'amulet_coin', name: 'Amulet Coin', price: 25000, emoji: '🪙', description: 'Doubles coins from /work shifts.' },
   // Career equipment
   { id: 'old_rod', name: 'Old Rod', price: 1500, emoji: '🎣', description: 'Basic fishing rod. Increases fisher rewards.' },
   { id: 'good_rod', name: 'Good Rod', price: 5000, emoji: '🎣', description: 'Better rod. Unlocks rarer fisher encounters.' },
@@ -27,7 +27,6 @@ const SHOP_ITEMS = [
   { id: 'drill', name: 'Drill', price: 10000, emoji: '🔩', description: 'Advanced drill. Unlocks fossil rewards.' },
 ];
 
-// Normalized lookup: strip spaces/accents, lowercase
 function normalizeItemName(str: string): string {
   return str.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
@@ -81,7 +80,22 @@ const command: Command = {
     }
 
     try {
-      await addBalance(client.prisma, interaction.user.id, -totalCost);
+      // Deduct coins and persist item in a transaction
+      await client.prisma.$transaction(async (tx) => {
+        const u = await tx.user.findUnique({ where: { id: interaction.user.id } });
+        if (!u || u.balance < totalCost) throw new Error('INSUFFICIENT_FUNDS');
+
+        await tx.user.update({
+          where: { id: interaction.user.id },
+          data: { balance: { decrement: totalCost }, totalSpent: { increment: totalCost } },
+        });
+
+        await tx.userInventory.upsert({
+          where: { userId_itemId: { userId: interaction.user.id, itemId: item.id } },
+          update: { quantity: { increment: qty } },
+          create: { userId: interaction.user.id, itemId: item.id, itemName: item.name, quantity: qty },
+        });
+      });
 
       await interaction.reply({
         embeds: [new EmbedBuilder()
@@ -92,6 +106,7 @@ const command: Command = {
             { name: '💰 Spent', value: `${formatNumber(totalCost)} PokéCoins`, inline: true },
             { name: '💳 Remaining', value: `${formatNumber(user.balance - totalCost)} PokéCoins`, inline: true },
           )
+          .setFooter({ text: 'Use /inventory to view your items.' })
           .setTimestamp()],
       });
     } catch (err: unknown) {

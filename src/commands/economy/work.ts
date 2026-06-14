@@ -143,7 +143,16 @@ const command: Command = {
 
     await setCooldown(client, interaction.user.id, `work:${jobName}`, cooldown);
 
+    // Apply Amulet Coin: double work rewards
+    let amuletBonus = false;
     if (reward > 0) {
+      const amuletCoin = await client.prisma.userInventory.findUnique({
+        where: { userId_itemId: { userId: interaction.user.id, itemId: 'amulet_coin' } },
+      });
+      if (amuletCoin && amuletCoin.quantity > 0) {
+        reward *= 2;
+        amuletBonus = true;
+      }
       await client.prisma.user.update({
         where: { id: interaction.user.id },
         data: { balance: { increment: reward }, totalEarned: { increment: reward } },
@@ -176,7 +185,7 @@ const command: Command = {
       .setTitle(`💼 Work — ${jobName}`)
       .setDescription(job.description)
       .addFields(
-        { name: 'Outcome', value: reward > 0 ? `💰 Earned **${formatNumber(reward)} PokéCoins**` : '❌ Earned nothing', inline: false },
+        { name: 'Outcome', value: reward > 0 ? `💰 Earned **${formatNumber(reward)} PokéCoins**${amuletBonus ? ' (🪙 Amulet Coin ×2!)' : ''}` : '❌ Earned nothing', inline: false },
         { name: '⭐ Trainer XP', value: `+${xpGain} XP`, inline: true },
         { name: '💼 Job Level', value: `Level ${jobRecord.level}${jobLeveledUp ? ' → **Level Up!**' : ''} (${newTimesWorked} shifts)`, inline: true },
       );

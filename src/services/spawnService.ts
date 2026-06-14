@@ -130,6 +130,18 @@ export async function spawnPokemon(client: BotClient, guildId: string, channelId
         // Catch the Pokemon
         collector.stop();
 
+        // Apply Shiny Charm: if user owns one and spawn wasn't already shiny, bonus roll
+        let finalIsShiny = isShiny;
+        if (!isShiny) {
+          const shinyCharm = await client.prisma.userInventory.findUnique({
+            where: { userId_itemId: { userId: interaction.user.id, itemId: 'shiny_charm' } },
+          });
+          if (shinyCharm && shinyCharm.quantity > 0) {
+            const bonusRate = guild ? guild.shinyRate * 3 : 0.006;
+            if (Math.random() < bonusRate) finalIsShiny = true;
+          }
+        }
+
         const nature = ['Hardy','Lonely','Brave','Adamant','Naughty','Bold','Docile','Relaxed','Impish','Lax','Timid','Hasty','Serious','Jolly','Naive','Modest','Mild','Quiet','Bashful','Rash','Calm','Gentle','Sassy','Careful','Quirky'][Math.floor(Math.random() * 25)];
 
         const moves = await client.prisma.pokemonMove.findMany({
@@ -142,7 +154,7 @@ export async function spawnPokemon(client: BotClient, guildId: string, channelId
           data: {
             userId: interaction.user.id,
             pokemonId: pokemon.id,
-            isShiny,
+            isShiny: finalIsShiny,
             level: Math.floor(Math.random() * 30) + 1,
             nature,
             ivHp: Math.floor(Math.random() * 32),
@@ -164,12 +176,12 @@ export async function spawnPokemon(client: BotClient, guildId: string, channelId
           where: { id: interaction.user.id },
           data: {
             pokemonCaught: { increment: 1 },
-            shinyCaught: isShiny ? { increment: 1 } : undefined,
+            shinyCaught: finalIsShiny ? { increment: 1 } : undefined,
             legendariesCaught: pokemon.isLegendary ? { increment: 1 } : undefined,
           },
         });
 
-        const catchXp = isShiny ? 100 : pokemon.isLegendary ? 500 : 25;
+        const catchXp = finalIsShiny ? 100 : pokemon.isLegendary ? 500 : 25;
         const { leveledUp: catchLeveledUp, newLevel: catchNewLevel } = await addXp(client.prisma, interaction.user.id, catchXp);
 
         // Pokédex milestone rewards
@@ -191,9 +203,10 @@ export async function spawnPokemon(client: BotClient, guildId: string, channelId
 
         await client.redis.del(guildSpawnKey);
 
+        const charmBonus = finalIsShiny && !isShiny; // caught shiny via charm (bonus)
         const catchEmbed = new EmbedBuilder()
-          .setColor(isShiny ? 0xffd700 : 0x00ff00)
-          .setTitle(isShiny ? `✨ Shiny ${pokemon.nameDisplay} caught!` : `🎉 ${pokemon.nameDisplay} caught!`)
+          .setColor(finalIsShiny ? 0xffd700 : 0x00ff00)
+          .setTitle(finalIsShiny ? `✨ Shiny ${pokemon.nameDisplay} caught!` : `🎉 ${pokemon.nameDisplay} caught!`)
           .setThumbnail(imageUrl ?? null)
           .addFields(
             { name: 'Level', value: `${userPokemon.level}`, inline: true },
@@ -202,6 +215,7 @@ export async function spawnPokemon(client: BotClient, guildId: string, channelId
             { name: '⭐ Trainer XP', value: `+${catchXp} XP`, inline: true },
           );
 
+        if (charmBonus) catchEmbed.addFields({ name: '✨ Shiny Charm!', value: 'Your Shiny Charm activated — a Shiny Pokémon!', inline: false });
         if (catchLeveledUp) catchEmbed.addFields({ name: '🎉 Trainer Level Up!', value: `You reached **Trainer Level ${catchNewLevel}**!`, inline: false });
         if (milestone) catchEmbed.addFields({ name: `📖 Pokédex Milestone: ${milestone.label}`, value: `+${milestone.coins.toLocaleString()} PokéCoins rewarded!`, inline: false });
 
@@ -213,9 +227,9 @@ export async function spawnPokemon(client: BotClient, guildId: string, channelId
         incrementQuestProgress(client.prisma, interaction.user.id, 'catch', 1).catch(() => {});
 
         const caughtEmbed = new EmbedBuilder()
-          .setColor(isShiny ? 0xffd700 : 0x00ff00)
-          .setTitle(isShiny ? `✨ Shiny ${pokemon.nameDisplay} was caught!` : `${pokemon.nameDisplay} was caught!`)
-          .setDescription(`<@${interaction.user.id}> caught the ${isShiny ? 'Shiny ' : ''}${pokemon.nameDisplay}!`)
+          .setColor(finalIsShiny ? 0xffd700 : 0x00ff00)
+          .setTitle(finalIsShiny ? `✨ Shiny ${pokemon.nameDisplay} was caught!` : `${pokemon.nameDisplay} was caught!`)
+          .setDescription(`<@${interaction.user.id}> caught the ${finalIsShiny ? 'Shiny ' : ''}${pokemon.nameDisplay}!`)
           .setImage(imageUrl ?? null);
 
         await msg.edit({ embeds: [caughtEmbed], components: [] }).catch(() => {});
