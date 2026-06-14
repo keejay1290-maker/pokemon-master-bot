@@ -19,7 +19,7 @@ Date: 2026-06-14 | Session S6 — Quality Pass
 
 ## B. Commit Hash
 
-> **See git log after push for exact hash** — commit created at session end.
+> **d63fac5**
 > Branch: main | Railway auto-deploys ~2 min after push.
 
 Commit message: "feat: S6 — /release, /nickname, IV display, achievement triggers, 5% listing fee, collection value, career leaderboard"
