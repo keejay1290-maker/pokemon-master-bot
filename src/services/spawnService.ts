@@ -4,6 +4,7 @@ import { TypeColors } from '../utils/embeds.js';
 import { REDIS_KEYS, REDIS_TTLS, deserializeSpawn, serializeSpawn } from '../utils/redisKeys.js';
 import { addXp } from './userService.js';
 import { checkAndAwardAchievements } from './achievementService.js';
+import { incrementQuestProgress } from './questService.js';
 
 const MESSAGE_SPAWN_CHANCE = 0.05;
 
@@ -159,7 +160,7 @@ export async function spawnPokemon(client: BotClient, guildId: string, channelId
           data: { isCaught: true, caughtById: interaction.user.id, caughtAt: new Date() },
         });
 
-        await client.prisma.user.update({
+        const updatedUser = await client.prisma.user.update({
           where: { id: interaction.user.id },
           data: {
             pokemonCaught: { increment: 1 },
@@ -170,6 +171,23 @@ export async function spawnPokemon(client: BotClient, guildId: string, channelId
 
         const catchXp = isShiny ? 100 : pokemon.isLegendary ? 500 : 25;
         const { leveledUp: catchLeveledUp, newLevel: catchNewLevel } = await addXp(client.prisma, interaction.user.id, catchXp);
+
+        // Pokédex milestone rewards
+        const POKEDEX_MILESTONES: Record<number, { coins: number; label: string }> = {
+          10: { coins: 500, label: '10 Pokémon Caught!' },
+          25: { coins: 1000, label: '25 Pokémon Caught!' },
+          50: { coins: 2500, label: '50 Pokémon Caught!' },
+          100: { coins: 5000, label: '100 Pokémon Caught!' },
+          250: { coins: 15000, label: '250 Pokémon Caught!' },
+          500: { coins: 50000, label: '500 Pokémon Caught!' },
+        };
+        const milestone = POKEDEX_MILESTONES[updatedUser.pokemonCaught];
+        if (milestone) {
+          await client.prisma.user.update({
+            where: { id: interaction.user.id },
+            data: { balance: { increment: milestone.coins }, totalEarned: { increment: milestone.coins } },
+          });
+        }
 
         await client.redis.del(guildSpawnKey);
 
@@ -185,11 +203,14 @@ export async function spawnPokemon(client: BotClient, guildId: string, channelId
           );
 
         if (catchLeveledUp) catchEmbed.addFields({ name: '🎉 Trainer Level Up!', value: `You reached **Trainer Level ${catchNewLevel}**!`, inline: false });
+        if (milestone) catchEmbed.addFields({ name: `📖 Pokédex Milestone: ${milestone.label}`, value: `+${milestone.coins.toLocaleString()} PokéCoins rewarded!`, inline: false });
 
         await interaction.editReply({ embeds: [catchEmbed] });
 
         // Check achievement milestones after catch (fire-and-forget)
         checkAndAwardAchievements(client, interaction.user.id, interaction.channelId, guildId).catch(() => {});
+        // Advance 'catch' quests (fire-and-forget)
+        incrementQuestProgress(client.prisma, interaction.user.id, 'catch', 1).catch(() => {});
 
         const caughtEmbed = new EmbedBuilder()
           .setColor(isShiny ? 0xffd700 : 0x00ff00)

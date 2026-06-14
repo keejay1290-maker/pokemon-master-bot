@@ -4,6 +4,7 @@ import {
 } from 'discord.js';
 import type { BotClient, Command } from '../../types/index.js';
 import { endGiveaway } from '../../jobs/giveawayJob.js';
+import { fetchSets } from '../../services/pokemonTcgService.js';
 
 const command: Command = {
   data: new SlashCommandBuilder()
@@ -12,9 +13,21 @@ const command: Command = {
     .addSubcommand((s) =>
       s.setName('create').setDescription('Create a giveaway')
         .addStringOption((o) => o.setName('title').setDescription('Giveaway title').setRequired(true))
-        .addStringOption((o) => o.setName('prize').setDescription('What to give away').setRequired(true))
+        .addStringOption((o) =>
+          o.setName('prize_type').setDescription('Prize type').setRequired(true).addChoices(
+            { name: 'Coins', value: 'coins' },
+            { name: 'Card Packs', value: 'packs' },
+          )
+        )
         .addIntegerOption((o) => o.setName('duration').setDescription('Duration in minutes').setRequired(true).setMinValue(1))
         .addIntegerOption((o) => o.setName('winners').setDescription('Number of winners').setMinValue(1).setMaxValue(10))
+        // Coins prize
+        .addIntegerOption((o) => o.setName('coins').setDescription('PokéCoins per winner (required if prize_type=coins)').setMinValue(1))
+        // Pack prizes
+        .addStringOption((o) =>
+          o.setName('pack_set').setDescription('Card set to give (required if prize_type=packs)').setAutocomplete(true)
+        )
+        .addIntegerOption((o) => o.setName('pack_quantity').setDescription('Packs per winner (default 1)').setMinValue(1).setMaxValue(10))
     )
     .addSubcommand((s) =>
       s.setName('end').setDescription('End a giveaway early')
@@ -25,21 +38,68 @@ const command: Command = {
         .addStringOption((o) => o.setName('id').setDescription('Giveaway ID').setRequired(true))
     ),
 
+  async autocomplete(interaction, client) {
+    const focused = interaction.options.getFocused(true);
+    if (focused.name === 'pack_set') {
+      const sets = await fetchSets(client);
+      const query = focused.value.toLowerCase();
+      const filtered = (sets as Array<{ id: string; name: string }>)
+        .filter((s) => s.name.toLowerCase().includes(query))
+        .slice(0, 25);
+      await interaction.respond(filtered.map((s) => ({ name: s.name, value: s.id })));
+    }
+  },
+
   async execute(interaction: ChatInputCommandInteraction, client: BotClient) {
     if (!interaction.guild) return;
     const sub = interaction.options.getSubcommand();
 
     if (sub === 'create') {
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) &&
+          interaction.user.id !== interaction.guild.ownerId) {
+        await interaction.reply({ content: '❌ Manage Server permission required to create giveaways.', ephemeral: true });
+        return;
+      }
+
       const title = interaction.options.getString('title', true);
-      const prize = interaction.options.getString('prize', true);
+      const prizeType = interaction.options.getString('prize_type', true) as 'coins' | 'packs';
       const duration = interaction.options.getInteger('duration', true);
       const winners = interaction.options.getInteger('winners') ?? 1;
       const endsAt = new Date(Date.now() + duration * 60000);
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let prizeData: any;
+      let prizeDescription: string;
+
+      if (prizeType === 'coins') {
+        const coins = interaction.options.getInteger('coins');
+        if (!coins) {
+          await interaction.reply({ content: '❌ Specify `coins` when prize_type is Coins.', ephemeral: true });
+          return;
+        }
+        prizeData = { coins };
+        prizeDescription = `💰 **${coins.toLocaleString()} PokéCoins**`;
+      } else {
+        const packSet = interaction.options.getString('pack_set');
+        if (!packSet) {
+          await interaction.reply({ content: '❌ Specify `pack_set` when prize_type is Card Packs.', ephemeral: true });
+          return;
+        }
+        const sets = await fetchSets(client);
+        const setData = (sets as Array<{ id: string; name: string }>).find((s) => s.id === packSet);
+        if (!setData) {
+          await interaction.reply({ content: '❌ Pack set not found. Use autocomplete to select a valid set.', ephemeral: true });
+          return;
+        }
+        const qty = interaction.options.getInteger('pack_quantity') ?? 1;
+        prizeData = { setId: packSet, setName: setData.name, quantity: qty };
+        prizeDescription = `📦 **${qty} ${setData.name} Pack${qty > 1 ? 's' : ''}**`;
+      }
+
       const embed = new EmbedBuilder()
         .setColor(0xffd700)
         .setTitle(`🎉 GIVEAWAY: ${title}`)
-        .setDescription(`**Prize:** ${prize}\n\nClick the button below to enter!`)
+        .setDescription(`**Prize:** ${prizeDescription}\n\nClick the button below to enter!`)
         .addFields(
           { name: '🏆 Winners', value: winners.toString(), inline: true },
           { name: '⏰ Ends', value: `<t:${Math.floor(endsAt.getTime() / 1000)}:R>`, inline: true },
@@ -61,8 +121,8 @@ const command: Command = {
           messageId: msg.id,
           hostId: interaction.user.id,
           title,
-          prizeType: 'coins',
-          prizeData: { description: prize },
+          prizeType,
+          prizeData,
           winners,
           endsAt,
         },
@@ -88,16 +148,18 @@ const command: Command = {
       collector.on('end', async () => { await endGiveaway(client, giveaway.id); });
 
     } else if (sub === 'end') {
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-        await interaction.reply({ content: 'No permission.', ephemeral: true }); return;
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) &&
+          interaction.user.id !== interaction.guild.ownerId) {
+        await interaction.reply({ content: '❌ No permission.', ephemeral: true }); return;
       }
       const id = interaction.options.getString('id', true);
       await endGiveaway(client, id);
       await interaction.reply({ content: `✅ Giveaway ${id} ended.`, ephemeral: true });
 
     } else if (sub === 'reroll') {
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-        await interaction.reply({ content: 'No permission.', ephemeral: true }); return;
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) &&
+          interaction.user.id !== interaction.guild.ownerId) {
+        await interaction.reply({ content: '❌ No permission.', ephemeral: true }); return;
       }
       const id = interaction.options.getString('id', true);
       const giveaway = await client.prisma.giveaway.findUnique({ where: { id }, include: { entries: true } });

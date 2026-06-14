@@ -4,6 +4,7 @@ import { openPack, fetchSets } from '../../services/pokemonTcgService.js';
 import { checkCooldown, setCooldown } from '../../utils/cooldown.js';
 import { formatNumber } from '../../utils/embeds.js';
 import { checkAndAwardAchievements } from '../../services/achievementService.js';
+import { incrementQuestProgress } from '../../services/questService.js';
 
 const PACK_COST = 500;
 const PACK_COOLDOWN = 3600;
@@ -110,6 +111,8 @@ const command: Command = {
 
     // Check achievement milestones after pack open (fire-and-forget)
     checkAndAwardAchievements(client, interaction.user.id, interaction.channelId, interaction.guild?.id).catch(() => {});
+    // Advance 'open_pack' quests (fire-and-forget)
+    incrementQuestProgress(client.prisma, interaction.user.id, 'open_pack', 1).catch(() => {});
 
     const rarityEmoji: Record<string, string> = {
       Common: '⚪', Uncommon: '🟢', Rare: '🔵', 'Rare Holo': '🔷',

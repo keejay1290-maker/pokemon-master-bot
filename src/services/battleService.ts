@@ -3,6 +3,7 @@ import { calcPokemonStats, getTypeEffectiveness, getEffectivenessText, TYPE_CHAR
 import { PrismaClient } from '@prisma/client';
 import { addXp } from './userService.js';
 import { checkAndAwardAchievements } from './achievementService.js';
+import { incrementQuestProgress } from './questService.js';
 
 export async function loadBattleTeam(
   prisma: PrismaClient,
@@ -157,4 +158,6 @@ export async function saveBattleResult(
 
   // Check achievement milestones for the winner (fire-and-forget)
   checkAndAwardAchievements(client, winnerId).catch(() => {});
+  // Advance 'battle_win' quests (fire-and-forget)
+  incrementQuestProgress(client.prisma, winnerId, 'battle_win', 1).catch(() => {});
 }

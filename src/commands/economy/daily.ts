@@ -3,6 +3,7 @@ import type { BotClient, Command } from '../../types/index.js';
 import { formatNumber } from '../../utils/embeds.js';
 import { checkAndAwardAchievements } from '../../services/achievementService.js';
 import { addXp } from '../../services/userService.js';
+import { incrementQuestProgress } from '../../services/questService.js';
 
 const command: Command = {
   data: new SlashCommandBuilder()
@@ -76,6 +77,7 @@ const command: Command = {
 
     await interaction.reply({ embeds: [embed] });
     await checkAndAwardAchievements(client, interaction.user.id, interaction.channelId, interaction.guild?.id);
+    incrementQuestProgress(client.prisma, interaction.user.id, 'earn_coins', total).catch(() => {});
   },
 };
 
