@@ -1,130 +1,123 @@
-# Tasks — Next Session (S10)
+# Tasks — Next Session (S11)
 
-> Updated: 2026-06-14 (S9 wrap-up)
+> Updated: 2026-06-14 (S10 wrap-up)
 > Bot: 62 commands, build tsc clean
-> Start by reading: `docs/S9_SESSION_HANDOFF.md`
+> Start by reading: `docs/S10_SESSION_HANDOFF.md` and `COMMON_MISTAKES.md`
 
 ---
 
-## P0 — Auction Settlement Job (CRITICAL)
+## P0 — Career V2 Deploy (START HERE)
 
-Auctions expire with no winner payout or asset transfer.
+Career V2 code is written and compiles. Must deploy:
 
 **Steps:**
-1. Cron (or per-minute setInterval): `marketListing.findMany({ where: { isAuction: true, status: 'active', auctionEndsAt: { lt: new Date() } } })`
-2. Top bidder = last entry in `bids` JSON array
-3. Coins: `transferBalance(prisma, topBidder.userId, listing.sellerId, topBid.amount)`
-4. Asset transfer:
-   - `pokemon` → `userPokemon.update({ where: { id: itemData.userPokemonId }, data: { userId: topBidder.userId } })`
-   - `item/pack` → `userInventory.upsert` for winner
-5. Mark `status: 'sold'`
-6. DM winner and seller
-7. No-bids: restore escrow to seller, mark `status: 'expired'`
+1. Delete standalone files: `fisher.ts`, `ranger.ts`, `breeder.ts`, `miner.ts`, `researcher.ts`, `rocket.ts`, `fish.ts` from `src/commands/economy/`
+2. Check `src/events/interactionCreate.ts` for any imports of deleted files
+3. `npm run build` — verify clean
+4. `npm run deploy:commands` — registers `/career work/shop/view/leaderboard`, deregisters 7 old commands
+5. Verify command count: 62 → ~55
+6. Commit and push
+
+**Cooldown keys carry over** — existing user cooldowns not broken (`career:fisher` etc. same as standalone files).
 
 ---
 
-## P1 — Career V2 Full Implementation
+## P0 — Redis URL on Railway (BLOCKING pack open)
 
-Design doc: `docs/CAREER_REWORK_V2.md`.
+Pack opening shows "Interaction Failed" on Railway because `REDIS_URL` is not set.
 
-**Steps:**
-1. `/career work [type]` replaces /fisher, /ranger, /breeder, /miner, /researcher, /rocket
-2. `/career view` — stats, level, equipment, next milestone
-3. `/career leaderboard` — top earners per career type
-4. `/career shop` — buy equipment tiers (check UserInventory)
-5. Level scaling: `reward *= (1.0 + userJob.level × 0.05)`
-6. Delete: fisher, ranger, breeder, miner, researcher, rocket, fish.ts
-7. `npm run deploy:commands`
-8. Target: 62 → 55 commands
+**Action:** Add `REDIS_URL=<connection string>` to Railway service env vars.
+- Railway Redis add-on (easiest)
+- Upstash free tier (external option)
+- Any Redis 7+ instance
+
+**COMMON_MISTAKES #01** documents this incident fully.
 
 ---
 
-## P2 — Bank/Rewards Consolidation
+## P1 — Bank + Rewards Consolidation
 
-From `docs/COMMAND_ARCHITECTURE_REVIEW.md`:
+From `docs/COMMAND_CONSOLIDATION_PLAN.md`:
 - `/balance` + `/deposit` + `/withdraw` → `/bank view/deposit/withdraw`
 - `/daily` + `/weekly` + `/monthly` → `/rewards daily/weekly/monthly`
-- Net: -4 commands → target 55 → 51
-- `npm run deploy:commands` after
+- Delete 6 files, create 2 new command files
+- `npm run deploy:commands`
+- Target: 55 → 51 commands
 
 ---
 
-## P3 — /rob Pokémon Drops
+## P2 — Creator Persona Platform
 
-- On successful rob: 5% chance attacker gains a common Pokémon
-- On failed rob: small item consolation chance
+**Write `docs/CREATOR_PLATFORM_ARCHITECTURE.md` BEFORE implementing.**
 
----
-
-## P4 — Audit Log for Channel Commands
-
-Add `logModAction` to: `/purge`, `/lock`, `/unlock`, `/slowmode`, `/config`.
-
----
-
-## P5 — Pokemon Auction Lock
-
-When a Pokémon is listed, block `/release` and `/trade`.
-Options: `auctionListed: Boolean` on UserPokemon, OR query `marketListing` active check before those actions.
+Design:
+- `src/config/creator-profile.ts` — provider abstraction (no hardcoded creator values)
+- `StaticCreatorProvider` — file-config driven
+- `WhatnotCreatorProvider` — Firecrawl/Playwright scheduled scrape for live status, recent sales, reviews
+- `FutureCustomProvider` — DB-driven per-guild
+- Commands: `/creator`, `/reviews`, `/clips`, `/store`, `/live`
+- Research Whatnot API first — may have public endpoints
 
 ---
 
-## NEW S9 Discovery — Creator Persona Architecture
+## P3 — Pack/Card Economy Rework
 
-The bot may need to support creator-specific deployments (e.g., GrimRipperCards or similar TCG streamers). Planning tasks:
+**Write docs first, then implement.**
 
-- [ ] Creator profile config layer (name, avatar, socials, WhatNot handle, live status)
-- [ ] No hardcoded creator values — all from config/DB
-- [ ] WhatNot integration research: Firecrawl scrape? Playwright? Webhook? Scheduled sync?
-- [ ] Creator knowledge base (pinned FAQ, promo links, creator-specific commands)
-- [ ] Creator live-status system (show when creator is live on WhatNot)
-- [ ] Creator reviews aggregation
-- [ ] Creator clips/shop integration
+- `docs/PACK_ECONOMY_V2.md` — TCG market tiers (S/A/B/C) with real pricing
+  - Tier S: Base Set, Base Set Shadowless, 1st Edition, Neo Destiny, Skyridge
+  - Tier A: Team Rocket, Gym Heroes, Neo Genesis, Neo Revelation
+  - Tier B: EX Era, Diamond & Pearl, Platinum, HGSS
+  - Tier C: Sun & Moon, Sword & Shield, Scarlet & Violet
+  - Research actual prices: TCGPlayer, PriceCharting, eBay sold, PokemonPrice, CardMarket
 
-**Write `docs/CREATOR_PERSONA_ARCHITECTURE.md` before implementing.**
+- `docs/CARD_ECONOMY_REWORK.md` — weighted rarity value tables
+  - Rarity × set tier × desirability × pull rate × alt art × legendary/mythical status
+  - Examples: Moonbreon = very high, Gold Star Charizard = ultra high, SV commons = low
 
 ---
 
-## NEW S9 Discovery — Pack Opening UX Improvements (V3)
+## P4 — Pack Opening V3
 
-Currently working (sequential reveal per button press). Future improvements:
-- [ ] Large card image (already in V2 design — verify image size in embed)
-- [ ] Animation-ready embed structure (placeholder for future JS/webhook updates)
-- [ ] Multi-pack mode (open 10 at once — fast mode)
-- [ ] Booster box support (12 packs in one purchase)
-- [ ] ETB (Elite Trainer Box) support (8 packs + accessories)
+Current V2 is sequential card reveal (working). V3 improvements:
+
+- [ ] Pack summary embed shows total estimated pull value
+- [ ] Progress: "Card 4 / 10 — 6 cards remaining" (partial in V2)
+- [ ] Multi-pack fast-open mode (all 10 cards at once)
+- [ ] ETB support (8 packs + accessories)
+- [ ] Booster box support (12 packs)
 
 ---
 
 ## Carry-Forward Bugs
 
-| ID | File | Description |
-|----|------|-------------|
-| AUC-SETTLE | New scheduler | Auction expiry → no settlement |
-| QUEST-SILENT | questService.ts | No DM/notification on quest completion |
-| RANKUP-ANNOUNCE | userService.ts | addXp leveledUp=true but no channel post |
+| ID | File | Description | Priority |
+|----|------|-------------|----------|
+| REDIS-URL-RAILWAY | Railway env | `REDIS_URL` not set → pack open broken | 🔴 P0 |
+| QUEST-SILENT | questService.ts | No DM/notification on quest completion | 🟡 P1 |
+| RANKUP-ANNOUNCE | userService.ts | Level up event not announced to channel | 🟡 P1 |
 
 ---
 
-## Command Count Target
-
-| Session | Count |
-|---------|-------|
-| S8 end | 61 |
-| S9 end | 62 |
-| S10 target (Career V2) | 55 |
-| S10 target (+ Bank/Rewards) | 51 |
-
----
-
-## Arch Reminders (S10)
+## Arch Reminders for S11
 
 - `addXp(prisma, userId, N)` — never raw `trainerXp: { increment: N }`
-- `transferBalance` throws `'INSUFFICIENT_FUNDS'` — always catch
+- `transferBalance` throws `'INSUFFICIENT_FUNDS'` — always catch and rollback
 - `checkAndAwardAchievements(client, userId, channelId?, guildId?)` — after stat increments
-- `incrementQuestProgress(prisma, userId, type, amount)` — after catch/battle/daily/pack
-- After schema changes: `npx prisma generate` → `npm run build` → `npm run db:push`
-- Framework sets cooldown BEFORE `execute()` — NEVER also call `checkCooldown()` inside `execute()`
-- UserInventory upsert: `upsert({ where: { userId_itemId: { userId, itemId } }, update: { quantity: { increment: qty } }, create: {...} })`
+- `incrementQuestProgress(prisma, userId, type, amount)` — after catch/battle/daily/pack/career work
 - Pack itemId format: `pack:${setId}` — never use set name as itemId
-- Button customId prefix must be registered in `interactionCreate.ts` handleButton() or it silently ignores
+- Button customId prefix must be registered in `interactionCreate.ts` `handleButton()` or silently ignored
+- After schema changes: `npx prisma generate` → `npm run build` → `npm run db:push`
+- Redis: always check `client.redis.isReady` before any Redis call — see COMMON_MISTAKES #01
+
+---
+
+## Command Count Tracker
+
+| Session | Count | Notes |
+|---------|-------|-------|
+| S8 end | 61 | |
+| S9 end | 62 | Auction ownership fix, pack reveal, @mention AI |
+| S10 end | 62 | Career V2 code written, standalone not yet deleted |
+| S11 target (Career deploy) | ~55 | -7 standalone, /career gains 2 new subcommands |
+| S11 target (Bank/Rewards) | ~51 | -4 more commands |

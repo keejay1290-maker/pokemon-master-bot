@@ -28,6 +28,17 @@ const command: Command = {
     const theirPokemon = await client.prisma.userPokemon.findFirst({ where: { id: requestId, userId: target.id }, include: { pokemon: true } });
     if (!theirPokemon) { await interaction.reply({ content: `<@${target.id}> doesn't have that Pokemon!`, ephemeral: true }); return; }
 
+    // Block trade if either Pokémon is in an active auction
+    const myAuction = await client.prisma.marketListing.findFirst({
+      where: { isAuction: true, status: 'active', itemData: { path: ['userPokemonId'], equals: offerId } },
+    });
+    if (myAuction) { await interaction.reply({ content: `❌ Your **${myPokemon.pokemon.nameDisplay}** is currently listed in an active auction.`, ephemeral: true }); return; }
+
+    const theirAuction = await client.prisma.marketListing.findFirst({
+      where: { isAuction: true, status: 'active', itemData: { path: ['userPokemonId'], equals: requestId } },
+    });
+    if (theirAuction) { await interaction.reply({ content: `❌ <@${target.id}>'s **${theirPokemon.pokemon.nameDisplay}** is currently listed in an active auction.`, ephemeral: true }); return; }
+
     const embed = new EmbedBuilder()
       .setColor(0x3498db)
       .setTitle('🤝 Trade Offer!')

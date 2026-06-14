@@ -285,20 +285,48 @@ async function handleBid(interaction: ChatInputCommandInteraction, client: BotCl
   }
 
   if (isBuyout) {
+    const data = listing.itemData as { name: string; type: 'pokemon' | 'item' | 'pack'; userPokemonId?: string; itemId?: string };
     try {
       await transferBalance(client.prisma, interaction.user.id, listing.sellerId, amount);
       await client.prisma.marketPurchase.create({ data: { listingId: listing.id, buyerId: interaction.user.id, price: amount } });
+
+      // Transfer asset to buyer
+      if (data.type === 'pokemon' && data.userPokemonId) {
+        await client.prisma.userPokemon.update({
+          where: { id: data.userPokemonId },
+          data: { userId: interaction.user.id },
+        });
+      } else if ((data.type === 'item' || data.type === 'pack') && data.itemId) {
+        await client.prisma.userInventory.upsert({
+          where: { userId_itemId: { userId: interaction.user.id, itemId: data.itemId } },
+          update: { quantity: { increment: 1 } },
+          create: { userId: interaction.user.id, itemId: data.itemId, itemName: data.name, quantity: 1 },
+        });
+      }
     } catch {
       await interaction.editReply({ content: 'Buyout failed — balance transfer error.' });
       return;
     }
 
-    const data = listing.itemData as Record<string, unknown>;
+    // DM seller
+    try {
+      const seller = await client.users.fetch(listing.sellerId);
+      await seller.send({
+        embeds: [new EmbedBuilder()
+          .setColor(0x00cc66)
+          .setTitle('⚡ Instant Buyout!')
+          .setDescription(`**${data.name ?? 'Item'}** was instantly bought by **${interaction.user.username}**.`)
+          .addFields({ name: '💰 Sale Price', value: `${formatNumber(amount)} PokéCoins`, inline: true })
+          .setTimestamp()],
+      });
+    } catch { /* DMs closed */ }
+
     await interaction.editReply({
       embeds: [new EmbedBuilder()
         .setColor(0xffd700)
         .setTitle('⚡ Buyout Complete!')
-        .setDescription(`You instantly bought **${(data.name as string) ?? 'item'}** for **${formatNumber(amount)} PokéCoins**!`)
+        .setDescription(`You instantly bought **${data.name ?? 'item'}** for **${formatNumber(amount)} PokéCoins**!`)
+        .setFooter({ text: 'Check /inventory or /box for your new item' })
         .setTimestamp()],
     });
     return;

@@ -133,6 +133,11 @@ function summaryButtons(userId: string, hasMorePacks: boolean) {
 
 // Called from interactionCreate for pack_reveal:* buttons
 export async function handlePackReveal(interaction: ButtonInteraction, client: BotClient, sessionId: string) {
+  if (!client.redis.isReady) {
+    await interaction.reply({ content: '❌ Pack reveal is temporarily unavailable (cache service offline). Please try again in a moment.', ephemeral: true });
+    return;
+  }
+
   const lockKey = `pack:lock:${sessionId}`;
   const sessionKey = `pack:session:${sessionId}`;
 
@@ -264,6 +269,10 @@ export async function createPackSession(
   setLogoUrl: string | undefined,
   cards: ResolvedCard[]
 ): Promise<{ sessionId: string; embed: EmbedBuilder; row: ActionRowBuilder<ButtonBuilder> }> {
+  if (!client.redis.isReady) {
+    throw new Error('REDIS_UNAVAILABLE');
+  }
+
   const sessionId = `${userId}-${Date.now()}`;
 
   const session: PackSession = {

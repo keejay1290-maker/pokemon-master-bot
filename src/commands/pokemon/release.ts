@@ -44,6 +44,15 @@ const command: Command = {
       return;
     }
 
+    // Block release if Pokémon is currently listed in an active auction
+    const activeAuction = await client.prisma.marketListing.findFirst({
+      where: { isAuction: true, status: 'active', itemData: { path: ['userPokemonId'], equals: up.id } },
+    });
+    if (activeAuction) {
+      await interaction.editReply({ content: `❌ **${up.nickname ?? up.pokemon.nameDisplay}** is currently listed in an active auction. Cancel the auction first.` });
+      return;
+    }
+
     const isSpecial = up.pokemon.isLegendary || up.pokemon.isMythical;
     const refund = up.isShiny ? 500 : isSpecial ? RARITY_REFUND['Legendary'] : (RARITY_REFUND[up.pokemon.rarity] ?? 20);
 

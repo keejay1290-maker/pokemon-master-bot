@@ -270,16 +270,31 @@ async function handleOpen(interaction: ChatInputCommandInteraction, client: BotC
       };
     });
 
-    const { embed, row: revealRow } = await createPackSession(
-      client,
-      interaction.user.id,
-      setId,
-      setInfo?.name ?? chosenPack.itemName.replace(' Pack', ''),
-      setInfo?.images?.logo ?? undefined,
-      resolvedCards
-    );
+    let sessionResult: Awaited<ReturnType<typeof createPackSession>>;
+    try {
+      sessionResult = await createPackSession(
+        client,
+        interaction.user.id,
+        setId,
+        setInfo?.name ?? chosenPack.itemName.replace(' Pack', ''),
+        setInfo?.images?.logo ?? undefined,
+        resolvedCards
+      );
+    } catch (e: any) {
+      // Refund the pack — session creation failed
+      await client.prisma.userInventory.upsert({
+        where: { userId_itemId: { userId: interaction.user.id, itemId: chosenItemId } },
+        update: { quantity: { increment: 1 } },
+        create: { userId: interaction.user.id, itemId: chosenItemId, itemName: chosenPack.itemName, quantity: 1 },
+      });
+      const msg = e.message === 'REDIS_UNAVAILABLE'
+        ? '❌ Pack reveal is temporarily unavailable (cache offline). Your pack has been refunded — try again in a moment.'
+        : '❌ Failed to start pack session. Your pack has been refunded.';
+      await selection.update({ content: msg, embeds: [], components: [] });
+      return;
+    }
 
-    await selection.update({ embeds: [embed], components: [revealRow] });
+    await selection.update({ embeds: [sessionResult.embed], components: [sessionResult.row] });
 
     // Fire-and-forget quest/achievement tracking for opening a pack
     incrementQuestProgress(client.prisma, interaction.user.id, 'open_pack', 1).catch(() => {});
