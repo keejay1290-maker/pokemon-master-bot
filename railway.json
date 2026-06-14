@@ -5,7 +5,7 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "startCommand": "echo MARK1_shell; node -v; echo MARK2_nodeok; ls -la dist/ | head; echo MARK3_listed; node --stack-trace-limit=50 dist/boot.js; echo EXITCODE=$?",
+    "startCommand": "node -v; echo SECOND_CMD_VISIBLE; node dist/boot.js",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 120,
     "restartPolicyType": "ON_FAILURE",
