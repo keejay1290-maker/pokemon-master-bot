@@ -9,8 +9,10 @@
 - **`.d.ts` command-load failures (42/boot).** `loadCommands` matched `.endsWith('.ts')` → required `dist/*.d.ts`. **Fix (a2672b4):** skip `.d.ts`/`.map`.
 - **Logs invisible on crash.** `process.exit(1)` discarded the async stdout pipe. **Fix (dd4f1d3):** synchronous `fs.writeSync` boot markers + `process.exitCode`.
 
-### IN PROGRESS (under final isolation)
-- **Secondary EXITED on Railway with zero Node output, even after the Redis fix.** VERIFIED: the EXITED deployment is the correct commit; `prisma db push` runs and prints "already in sync" (proving node works via npx), but the chained `node dist/boot.js` produces **zero output** (not even the first synchronous `fs.writeSync`). **HYPOTHESIS (leading):** the prisma step doesn't cleanly return control to the `&&` chain, so the second `node` never runs; OR Railway healthcheck kills before bind. **Action:** diagnostic deploy (d794794) runs `node dist/boot.js` first with a `PRENODE_MARKER` to confirm; crash-proof wrapper (`dist/boot.js`) will surface any import-time error.
+### IN PROGRESS — see `docs/SESSION_HANDOFF_S2.md` for the full decision tree
+- **Prod healthcheck fails; `node <entry>` shows zero output.** UPDATED FINDING: **Railway captures only the FIRST command's stdout** in the `sh -c "A && B"` start chain. Across every deploy the first command (npx prisma / echo `PRENODE_MARKER` / `MARK1_shell`) is captured, but everything after it — `node dist/index.js`, `node dist/boot.js`, even a trailing `echo` — is invisible. So node may be running but its logs (and any crash) are unobservable, OR node crashes before its first JS line.
+- **Decisive probe deploying: commit `1168b6b`** = `node -v; echo SECOND_CMD_VISIBLE; node dist/boot.js`. Read it first next session (handoff has the exact command + decision tree): node-v output → binary OK; SECOND_CMD_VISIBLE → 2nd-command capture works; then choose between "make bot the sole/first command" vs "node crashes pre-JS".
+- **canvas/sharp are UNUSED** — the missing-libs fix (f43a305) was hygiene, almost certainly not the root cause.
 - **Builder drift.** railway.json says `DOCKERFILE`; Railway showed transient `RAILPACK`. Pinned start command + healthcheck via railway.json (fe4aca6).
 
 ## Readiness checklist
