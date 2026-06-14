@@ -180,6 +180,30 @@ const command: Command = {
     const xpGain = Math.max(25, Math.floor(reward / 20));
     const { leveledUp, newLevel } = await addXp(client.prisma, interaction.user.id, xpGain);
 
+    // Work item drop — job-themed items, ~8% chance
+    const WORK_DROPS: Record<string, Array<{ itemId: string; itemName: string; chance: number; message: string }>> = {
+      'Safari Guide':     [{ itemId: 'safari_ball', itemName: 'Safari Ball', chance: 0.08, message: '🎯 You kept a Safari Ball from the zone!' }],
+      'Breeder':          [{ itemId: 'oran_berry', itemName: 'Oran Berry', chance: 0.10, message: '🍇 The Day Care gave you extra berries!' }],
+      'Researcher':       [{ itemId: 'exp_shard', itemName: 'EXP Shard', chance: 0.08, message: '🔬 Lab by-product: an EXP Shard!' }],
+      'Pokemon Ranger':   [{ itemId: 'pokeball', itemName: 'Poke Ball', chance: 0.10, message: '⚽ You kept some Poké Balls from patrol!' }],
+      'Pokemon Professor':[{ itemId: 'rare_candy', itemName: 'Rare Candy', chance: 0.04, message: '🍬 Research surplus: a Rare Candy!' }],
+    };
+    let itemDropMessage: string | null = null;
+    const drops = WORK_DROPS[jobName];
+    if (drops) {
+      for (const drop of drops) {
+        if (Math.random() < drop.chance) {
+          await client.prisma.userInventory.upsert({
+            where: { userId_itemId: { userId: interaction.user.id, itemId: drop.itemId } },
+            update: { quantity: { increment: 1 } },
+            create: { userId: interaction.user.id, itemId: drop.itemId, itemName: drop.itemName, quantity: 1 },
+          });
+          itemDropMessage = drop.message;
+          break;
+        }
+      }
+    }
+
     const embed = new EmbedBuilder()
       .setColor(reward > 0 ? 0x00ff00 : 0xff4444)
       .setTitle(`💼 Work — ${jobName}`)
@@ -191,6 +215,7 @@ const command: Command = {
       );
 
     if (eventMessage) embed.addFields({ name: '📝 Event', value: eventMessage, inline: false });
+    if (itemDropMessage) embed.addFields({ name: '🎒 Item Drop!', value: itemDropMessage, inline: false });
     if (leveledUp) embed.addFields({ name: '🎉 Trainer Level Up!', value: `You reached **Trainer Level ${newLevel}**!`, inline: false });
     embed.addFields({ name: '⏰ Next Shift', value: formatDuration(cooldown), inline: true }).setTimestamp();
 
