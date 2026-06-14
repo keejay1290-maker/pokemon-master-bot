@@ -11,16 +11,42 @@ import { startSpawnService } from './services/spawnService.js';
 import { startJobService } from './jobs/index.js';
 import { startDashboard } from './dashboard/server.js';
 
+// Synchronous boot logger. process.stdout is an ASYNC pipe in containers, so
+// winston/console output can be lost if the process exits before libuv flushes.
+// fs.writeSync(fd) is synchronous and survives process.exit — this is the only
+// reliable way to capture a crash that happens during early startup on Railway.
+const boot = (msg: string) => {
+  try { fs.writeSync(1, `[boot] ${msg}\n`); } catch { /* ignore */ }
+};
+const bootErr = (msg: string) => {
+  try { fs.writeSync(2, `[boot-error] ${msg}\n`); } catch { /* ignore */ }
+};
+
+// Register crash handlers BEFORE anything else so nothing is ever swallowed.
+process.on('uncaughtException', (err) => {
+  bootErr(`uncaughtException: ${err?.stack || err}`);
+  process.exitCode = 1;
+});
+process.on('unhandledRejection', (err) => {
+  bootErr(`unhandledRejection: ${(err as Error)?.stack || err}`);
+});
+
+boot('index.js evaluating');
+
 const logger = createLogger();
+boot('logger created');
 
 async function main() {
+  boot('main() entered');
   logger.info('Starting Pokemon Master Bot...');
 
   const prisma = new PrismaClient({
     log: process.env.NODE_ENV === 'development' ? ['query', 'error'] : ['error'],
   });
 
+  boot('connecting to database...');
   await prisma.$connect();
+  boot('database connected');
   logger.info('Database connected');
 
   // Redis is OPTIONAL. Never `await` the connect — redis v4's default reconnect
@@ -68,29 +94,54 @@ async function main() {
   client.logger = logger;
 
   // Load commands
+  boot('loading commands...');
   const commandsPath = path.join(__dirname, 'commands');
   loadCommands(client, commandsPath);
+  boot(`commands loaded: ${client.commands.size}`);
 
   // Register events
   registerEvents(client);
+  boot('events registered');
 
   // Start dashboard before login so /health responds immediately to Railway healthcheck
   if (process.env.NODE_ENV !== 'test') {
-    startDashboard(client).catch((err) =>
-      logger.error('Dashboard failed to start:', err)
-    );
+    boot('starting dashboard...');
+    startDashboard(client)
+      .then(() => boot('dashboard started'))
+      .catch((err) => {
+        bootErr(`dashboard failed: ${err?.stack || err}`);
+        logger.error('Dashboard failed to start:', err);
+      });
   }
 
-  // Login
-  await client.login(process.env.DISCORD_TOKEN);
-  logger.info('Bot logged in');
+  // Login. Do not crash the process on login failure — keep the dashboard alive
+  // so /health passes and the real auth error is visible in logs.
+  boot('logging in to Discord...');
+  if (!process.env.DISCORD_TOKEN) {
+    bootErr('DISCORD_TOKEN is missing — bot cannot log in');
+  }
+  client
+    .login(process.env.DISCORD_TOKEN)
+    .then(() => {
+      boot('discord login resolved');
+      logger.info('Bot logged in');
+    })
+    .catch((err) => {
+      bootErr(`discord login failed: ${err?.message || err}`);
+      logger.error('Discord login failed:', err);
+    });
 
   // Start services after login
   client.once('ready', async () => {
+    boot(`ready as ${client.user?.tag}`);
     logger.info(`Bot ready as ${client.user?.tag}`);
     startSpawnService(client);
     startJobService(client);
   });
+
+  // Keep the event loop alive even if Discord login fails, so the health
+  // endpoint stays up and Railway keeps the container RUNNING.
+  setInterval(() => { /* heartbeat */ }, 1 << 30);
 
   // Graceful shutdown
   const shutdown = async () => {
@@ -102,10 +153,7 @@ async function main() {
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
-
-  process.on('unhandledRejection', (err) => {
-    logger.error('Unhandled rejection:', err);
-  });
+  boot('main() setup complete — process staying alive');
 }
 
 function loadCommands(client: BotClient, dirPath: string) {
@@ -138,6 +186,7 @@ function loadCommands(client: BotClient, dirPath: string) {
 }
 
 main().catch((err) => {
-  console.error('Fatal error:', err);
-  process.exit(1);
+  // Synchronous write so the error survives even immediate exit on a piped stdout.
+  bootErr(`FATAL in main(): ${err?.stack || err}`);
+  process.exitCode = 1;
 });
