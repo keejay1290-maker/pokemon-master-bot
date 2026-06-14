@@ -2,6 +2,7 @@ import { Message, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Co
 import type { BotClient } from '../types/index.js';
 import { TypeColors } from '../utils/embeds.js';
 import { REDIS_KEYS, REDIS_TTLS, deserializeSpawn, serializeSpawn } from '../utils/redisKeys.js';
+import { addXp } from './userService.js';
 
 const MESSAGE_SPAWN_CHANCE = 0.05;
 
@@ -163,9 +164,11 @@ export async function spawnPokemon(client: BotClient, guildId: string, channelId
             pokemonCaught: { increment: 1 },
             shinyCaught: isShiny ? { increment: 1 } : undefined,
             legendariesCaught: pokemon.isLegendary ? { increment: 1 } : undefined,
-            trainerXp: { increment: isShiny ? 100 : pokemon.isLegendary ? 500 : 25 },
           },
         });
+
+        const catchXp = isShiny ? 100 : pokemon.isLegendary ? 500 : 25;
+        const { leveledUp: catchLeveledUp, newLevel: catchNewLevel } = await addXp(client.prisma, interaction.user.id, catchXp);
 
         await client.redis.del(guildSpawnKey);
 
@@ -176,8 +179,11 @@ export async function spawnPokemon(client: BotClient, guildId: string, channelId
           .addFields(
             { name: 'Level', value: `${userPokemon.level}`, inline: true },
             { name: 'Nature', value: nature, inline: true },
-            { name: 'ID', value: `#${userPokemon.id.slice(0, 8)}`, inline: true }
+            { name: 'ID', value: `#${userPokemon.id.slice(0, 8)}`, inline: true },
+            { name: '⭐ Trainer XP', value: `+${catchXp} XP`, inline: true },
           );
+
+        if (catchLeveledUp) catchEmbed.addFields({ name: '🎉 Trainer Level Up!', value: `You reached **Trainer Level ${catchNewLevel}**!`, inline: false });
 
         await interaction.editReply({ embeds: [catchEmbed] });
 

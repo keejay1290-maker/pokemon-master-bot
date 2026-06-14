@@ -1,6 +1,7 @@
 import { SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder } from 'discord.js';
 import type { BotClient, Command } from '../../types/index.js';
 import { formatNumber } from '../../utils/embeds.js';
+import { addXp } from '../../services/userService.js';
 
 const command: Command = {
   data: new SlashCommandBuilder().setName('weekly').setDescription('Claim your weekly PokéCoin reward'),
@@ -31,7 +32,13 @@ const command: Command = {
     const total = base + bonus;
 
     await client.prisma.user.update({ where: { id: interaction.user.id }, data: { balance: { increment: total }, totalEarned: { increment: total }, weeklyStreak: streak, lastWeekly: new Date() } });
-    await interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00ff00).setTitle('✅ Weekly Reward Claimed!').addFields({ name: '💰 Reward', value: `+${formatNumber(total)} PokéCoins`, inline: true }, { name: '🔥 Streak', value: `${streak} week${streak !== 1 ? 's' : ''}`, inline: true }).setTimestamp()] });
+    const { leveledUp, newLevel } = await addXp(client.prisma, interaction.user.id, 75);
+
+    const embed = new EmbedBuilder().setColor(0x00ff00).setTitle('✅ Weekly Reward Claimed!')
+      .addFields({ name: '💰 Reward', value: `+${formatNumber(total)} PokéCoins`, inline: true }, { name: '🔥 Streak', value: `${streak} week${streak !== 1 ? 's' : ''}`, inline: true }, { name: '⭐ Trainer XP', value: '+75 XP', inline: true })
+      .setTimestamp();
+    if (leveledUp) embed.addFields({ name: '🎉 Trainer Level Up!', value: `You reached **Level ${newLevel}**!`, inline: false });
+    await interaction.reply({ embeds: [embed] });
   },
 };
 export default command;

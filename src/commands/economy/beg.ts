@@ -2,6 +2,7 @@ import { SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder } from '
 import type { BotClient, Command } from '../../types/index.js';
 import { formatNumber, formatDuration } from '../../utils/embeds.js';
 import { checkCooldown, setCooldown } from '../../utils/cooldown.js';
+import { addXp } from '../../services/userService.js';
 
 const RESPONSES = [
   { msg: 'A kind trainer tossed you some coins!', min: 50, max: 150 },
@@ -27,12 +28,15 @@ const command: Command = {
     const amount = res.min > 0 ? Math.floor(Math.random() * (res.max - res.min) + res.min) : 0;
 
     await setCooldown(client, interaction.user.id, 'beg', COOLDOWN);
-    if (amount > 0) await client.prisma.user.update({ where: { id: interaction.user.id }, data: { balance: { increment: amount }, totalEarned: { increment: amount } } });
+    if (amount > 0) {
+      await client.prisma.user.update({ where: { id: interaction.user.id }, data: { balance: { increment: amount }, totalEarned: { increment: amount } } });
+      await addXp(client.prisma, interaction.user.id, 5);
+    }
 
     await interaction.reply({
       embeds: [new EmbedBuilder().setColor(amount > 0 ? 0x00ff00 : 0x808080)
         .setTitle(amount > 0 ? '🙏 Someone was generous!' : '🙏 No luck...')
-        .setDescription(`${res.msg}${amount > 0 ? `\n\n+**${formatNumber(amount)} PokéCoins**` : ''}`)
+        .setDescription(`${res.msg}${amount > 0 ? `\n\n+**${formatNumber(amount)} PokéCoins**\n+**5 Trainer XP**` : ''}`)
         .setTimestamp()],
     });
   },

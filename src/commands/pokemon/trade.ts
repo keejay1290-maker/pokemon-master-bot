@@ -3,6 +3,7 @@ import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType,
 } from 'discord.js';
 import type { BotClient, Command } from '../../types/index.js';
+import { addXp } from '../../services/userService.js';
 
 const command: Command = {
   data: new SlashCommandBuilder()
@@ -78,6 +79,12 @@ const command: Command = {
           completedAt: new Date(),
         },
       });
+
+      // Award XP to both traders
+      await Promise.all([
+        addXp(client.prisma, interaction.user.id, 50),
+        addXp(client.prisma, target.id, 50),
+      ]);
 
       await btn.update({
         embeds: [new EmbedBuilder().setColor(0x00ff00).setTitle('✅ Trade Complete!')
