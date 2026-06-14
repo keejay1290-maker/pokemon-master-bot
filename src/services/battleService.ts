@@ -1,6 +1,7 @@
 import type { BotClient, BattleState, BattlePokemon, StatStages, MoveData } from '../types/index.js';
 import { calcPokemonStats, getTypeEffectiveness, getEffectivenessText, TYPE_CHART } from '../utils/pokemon.js';
 import { PrismaClient } from '@prisma/client';
+import { addXp } from './userService.js';
 
 export async function loadBattleTeam(
   prisma: PrismaClient,
@@ -137,7 +138,6 @@ export async function saveBattleResult(
     where: { id: winnerId },
     data: {
       battlesWon: { increment: 1 },
-      trainerXp: { increment: 100 },
       rankedPoints: isRanked ? { increment: 25 } : undefined,
     },
   });
@@ -149,4 +149,8 @@ export async function saveBattleResult(
       rankedPoints: isRanked ? { decrement: 15 } : undefined,
     },
   });
+
+  // Grant trainer XP via addXp so level-up logic fires
+  const xpGain = 100 + state.turn * 2;
+  await addXp(client.prisma, winnerId, xpGain);
 }

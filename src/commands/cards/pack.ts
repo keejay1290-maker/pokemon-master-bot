@@ -67,9 +67,16 @@ const command: Command = {
     // Save cards to collection
     for (const card of cards) {
       const c = card as Record<string, unknown>;
+      const tcgprices = (c.tcgplayer as Record<string, unknown> | null)?.prices as Record<string, Record<string, number>> | null;
+      const marketValue =
+        tcgprices?.holofoil?.market ??
+        tcgprices?.normal?.market ??
+        tcgprices?.reverseHolofoil?.market ??
+        null;
+
       await client.prisma.card.upsert({
         where: { id: c.id as string },
-        update: {},
+        update: { marketValue: marketValue ?? undefined },
         create: {
           id: c.id as string,
           name: c.name as string,
@@ -84,6 +91,7 @@ const command: Command = {
           artist: c.artist as string ?? null,
           imageSmall: ((c.images as Record<string, unknown>)?.small) as string ?? null,
           imageLarge: ((c.images as Record<string, unknown>)?.large) as string ?? null,
+          marketValue,
         },
       });
 

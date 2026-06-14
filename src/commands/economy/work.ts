@@ -2,6 +2,7 @@ import { SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder } from '
 import type { BotClient, Command, JobData } from '../../types/index.js';
 import { formatNumber, formatDuration } from '../../utils/embeds.js';
 import { checkCooldown, setCooldown } from '../../utils/cooldown.js';
+import { addXp } from '../../services/userService.js';
 
 const JOBS: JobData[] = [
   {
@@ -142,24 +143,46 @@ const command: Command = {
 
     await setCooldown(client, interaction.user.id, `work:${jobName}`, cooldown);
 
-    await client.prisma.user.update({
-      where: { id: interaction.user.id },
-      data: reward > 0 ? { balance: { increment: reward }, totalEarned: { increment: reward } } : {},
-    });
+    if (reward > 0) {
+      await client.prisma.user.update({
+        where: { id: interaction.user.id },
+        data: { balance: { increment: reward }, totalEarned: { increment: reward } },
+      });
+    }
 
-    await client.prisma.userJob.upsert({
+    const jobRecord = await client.prisma.userJob.upsert({
       where: { userId_jobName: { userId: interaction.user.id, jobName } },
       update: { lastWorked: new Date(), totalEarned: { increment: reward }, timesWorked: { increment: 1 } },
       create: { userId: interaction.user.id, jobName, lastWorked: new Date(), totalEarned: reward, timesWorked: 1 },
     });
 
+    // Level up every 10 uses
+    let jobLeveledUp = false;
+    const newTimesWorked = jobRecord.timesWorked + 1;
+    if (newTimesWorked % 10 === 0) {
+      await client.prisma.userJob.update({
+        where: { userId_jobName: { userId: interaction.user.id, jobName } },
+        data: { level: { increment: 1 } },
+      });
+      jobLeveledUp = true;
+    }
+
+    // Grant trainer XP
+    const xpGain = Math.max(25, Math.floor(reward / 20));
+    const { leveledUp, newLevel } = await addXp(client.prisma, interaction.user.id, xpGain);
+
     const embed = new EmbedBuilder()
       .setColor(reward > 0 ? 0x00ff00 : 0xff4444)
       .setTitle(`💼 Work — ${jobName}`)
       .setDescription(job.description)
-      .addFields({ name: 'Outcome', value: reward > 0 ? `💰 Earned **${formatNumber(reward)} PokéCoins**` : '❌ Earned nothing', inline: false });
+      .addFields(
+        { name: 'Outcome', value: reward > 0 ? `💰 Earned **${formatNumber(reward)} PokéCoins**` : '❌ Earned nothing', inline: false },
+        { name: '⭐ Trainer XP', value: `+${xpGain} XP`, inline: true },
+        { name: '💼 Job Level', value: `Level ${jobRecord.level}${jobLeveledUp ? ' → **Level Up!**' : ''} (${newTimesWorked} shifts)`, inline: true },
+      );
 
     if (eventMessage) embed.addFields({ name: '📝 Event', value: eventMessage, inline: false });
+    if (leveledUp) embed.addFields({ name: '🎉 Trainer Level Up!', value: `You reached **Trainer Level ${newLevel}**!`, inline: false });
     embed.addFields({ name: '⏰ Next Shift', value: formatDuration(cooldown), inline: true }).setTimestamp();
 
     await interaction.reply({ embeds: [embed] });

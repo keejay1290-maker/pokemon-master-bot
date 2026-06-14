@@ -2,6 +2,7 @@ import { SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder } from '
 import type { BotClient, Command } from '../../types/index.js';
 import { formatNumber } from '../../utils/embeds.js';
 import { checkAndAwardAchievements } from '../../services/achievementService.js';
+import { addXp } from '../../services/userService.js';
 
 const command: Command = {
   data: new SlashCommandBuilder()
@@ -67,6 +68,11 @@ const command: Command = {
       .setTimestamp();
 
     if (streak >= 7) embed.setDescription(`🔥 **${streak} day streak!** Keep it up!`);
+
+    const xpGain = 50 + Math.min(streak * 5, 100);
+    const { leveledUp, newLevel } = await addXp(client.prisma, interaction.user.id, xpGain);
+    if (leveledUp) embed.addFields({ name: '🎉 Level Up!', value: `You reached **Level ${newLevel}**!`, inline: true });
+    embed.addFields({ name: '⭐ Trainer XP', value: `+${xpGain} XP`, inline: true });
 
     await interaction.reply({ embeds: [embed] });
     await checkAndAwardAchievements(client, interaction.user.id, interaction.channelId, interaction.guild?.id);

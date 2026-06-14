@@ -2,6 +2,7 @@ import { SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder } from '
 import type { BotClient, Command } from '../../types/index.js';
 import { formatNumber, formatDuration } from '../../utils/embeds.js';
 import { checkCooldown, setCooldown } from '../../utils/cooldown.js';
+import { addXp } from '../../services/userService.js';
 
 const ENCOUNTERS = [
   { name: 'Rattata', reward: 80, chance: 0.3, emoji: '🐭' },
@@ -44,11 +45,16 @@ const command: Command = {
     await setCooldown(client, interaction.user.id, 'hunt', cooldownSecs);
     await client.prisma.user.update({ where: { id: interaction.user.id }, data: { balance: { increment: total }, totalEarned: { increment: total } } });
 
-    await interaction.reply({
-      embeds: [new EmbedBuilder().setColor(0x2ecc71).setTitle(`🌿 Encountered a ${enc.name}!`)
-        .setDescription(`${enc.emoji} Chased away and earned **${formatNumber(enc.reward)} PokéCoins**${bonus > 0 ? `\n🌟 Bonus: +${formatNumber(bonus)} PokéCoins!` : ''}`)
-        .setFooter({ text: `Total: ${formatNumber(total)} PokéCoins` }).setTimestamp()],
-    });
+    const xpGain = Math.max(10, Math.floor(enc.reward / 40));
+    const { leveledUp, newLevel } = await addXp(client.prisma, interaction.user.id, xpGain);
+
+    const embed = new EmbedBuilder().setColor(0x2ecc71).setTitle(`🌿 Encountered a ${enc.name}!`)
+      .setDescription(`${enc.emoji} Chased away and earned **${formatNumber(enc.reward)} PokéCoins**${bonus > 0 ? `\n🌟 Bonus: +${formatNumber(bonus)} PokéCoins!` : ''}`)
+      .addFields({ name: '⭐ Trainer XP', value: `+${xpGain} XP`, inline: true })
+      .setFooter({ text: `Total: ${formatNumber(total)} PokéCoins` }).setTimestamp();
+    if (leveledUp) embed.addFields({ name: '🎉 Level Up!', value: `You reached **Level ${newLevel}**!`, inline: true });
+
+    await interaction.reply({ embeds: [embed] });
   },
 };
 export default command;

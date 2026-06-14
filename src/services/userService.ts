@@ -75,11 +75,11 @@ export async function addXp(prisma: PrismaClient, userId: string, xp: number) {
 }
 
 export function getTrainerTitle(level: number): string {
-  if (level >= 100) return 'Pokemon Master';
-  if (level >= 80) return 'Elite Four Member';
-  if (level >= 60) return 'Gym Leader';
-  if (level >= 40) return 'Ace Trainer';
-  if (level >= 20) return 'Pokemon Trainer';
+  if (level >= 150) return 'Champion';
+  if (level >= 100) return 'Elite Four';
+  if (level >= 75) return 'Gym Leader';
+  if (level >= 50) return 'Gym Challenger';
+  if (level >= 25) return 'Ace Trainer';
   if (level >= 10) return 'Youngster';
   return 'Rookie Trainer';
 }

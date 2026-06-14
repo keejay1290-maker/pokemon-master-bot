@@ -2,6 +2,7 @@ import { SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder } from '
 import type { BotClient, Command } from '../../types/index.js';
 import { formatNumber, formatDuration } from '../../utils/embeds.js';
 import { checkCooldown, setCooldown } from '../../utils/cooldown.js';
+import { addXp } from '../../services/userService.js';
 
 const CATCHES = [
   { name: 'Magikarp', reward: 100, chance: 0.3, emoji: '🐟' },
@@ -42,10 +43,16 @@ const command: Command = {
     await setCooldown(client, interaction.user.id, 'fish', cooldownSecs);
     await client.prisma.user.update({ where: { id: interaction.user.id }, data: { balance: { increment: caught.reward }, totalEarned: { increment: caught.reward } } });
 
-    await interaction.reply({
-      embeds: [new EmbedBuilder().setColor(0x3498db).setTitle(`🎣 You caught a ${caught.name}!`)
-        .setDescription(`${caught.emoji} Sold for **${formatNumber(caught.reward)} PokéCoins**!\nNext cast in ${formatDuration(cooldownSecs)}.`).setTimestamp()],
-    });
+    const xpGain = Math.max(10, Math.floor(caught.reward / 50));
+    const { leveledUp, newLevel } = await addXp(client.prisma, interaction.user.id, xpGain);
+
+    const embed = new EmbedBuilder().setColor(0x3498db).setTitle(`🎣 You caught a ${caught.name}!`)
+      .setDescription(`${caught.emoji} Sold for **${formatNumber(caught.reward)} PokéCoins**!\nNext cast in ${formatDuration(cooldownSecs)}.`)
+      .addFields({ name: '⭐ Trainer XP', value: `+${xpGain} XP`, inline: true })
+      .setTimestamp();
+    if (leveledUp) embed.addFields({ name: '🎉 Level Up!', value: `You reached **Level ${newLevel}**!`, inline: true });
+
+    await interaction.reply({ embeds: [embed] });
   },
 };
 export default command;
