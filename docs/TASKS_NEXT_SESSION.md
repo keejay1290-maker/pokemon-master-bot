@@ -1,163 +1,152 @@
-# Tasks — Next Session (S14)
+# Tasks — Next Session (S15)
 
-> Updated: 2026-06-15 (S13B wrap-up)
-> Commit pushed this session: `1feb448` (battle damage fix + @mention AI fix)
-> Start by reading: `docs/S13B_SESSION_HANDOFF.md` and `COMMON_MISTAKES.md`
-> S13B produced: Battle V2 audit docs, @mention AI fix, battle damage fix, MOVE_DATA_AUDIT.md
+> Updated: 2026-06-15 (S14 wrap-up)
+> Last commit pushed: `a9d76e0` (pack open interaction fix + tier pricing)
+> Start by reading: `docs/S14_SESSION_HANDOFF.md` and `COMMON_MISTAKES.md`
 
 ---
 
-## FIRST TASK — Repository Audit (DO THIS BEFORE ANYTHING ELSE)
+## FIRST TASK — @grimbot / Professor Grim AI (STILL BROKEN — P0)
 
-Run: `git status`, `git log --oneline --decorate -20`, `git diff --stat`
+@mention AI is still returning "My research terminal seems to be offline right now."
+The model fix (`llama-3.3-70b-versatile`) is committed but the bot may not be running
+the latest code, OR `GROQ_API_KEY` is missing/invalid on Railway.
 
-The working tree has **many uncommitted modified and untracked files** from S11/S12:
+**Diagnosis steps (do these first):**
+1. `railway logs --tail 50` — search for `[Groq]` lines
+2. If `GROQ_API_KEY present=false` → add key to Railway env vars
+3. If `API error — status=400` → model issue, switch to `llama-3.1-8b-instant`
+4. If `API error — status=401` → rotate key at console.groq.com
+5. If no `[Groq] module loaded` line → the groqService.ts fix was never deployed; run `railway up --detach`
 
+**After fixing:** Rename the AI persona from "Professor Oak" to "Professor Grim":
+- Update system prompt in `groqService.ts`: character is "Professor Grim" — GrimRipperCards' in-house Pokémon expert
+- Professor Grim knows: all Pokémon species/mechanics, Grim's livestream schedule and highlights, all bot commands
+- Add livestream knowledge section to system prompt (ask user for stream schedule/highlights content to inject)
+- Keep the @mention flow identical — only the persona name and knowledge base changes
+
+---
+
+## P0 — Remove /auction command
+
+The `/auction` command was supposed to be removed in a previous session but still exists.
+**Remove it:**
+1. Delete `src/commands/economy/auction.ts` (verify file path first)
+2. Remove any import/registration in `deploy-commands.ts`
+3. Remove any button/select handlers in `interactionCreate.ts` with `auction_` prefix
+4. `npm run build` → `npm run deploy:commands` → verify command no longer shows in Discord
+5. Check `auctionJob.ts` — if it only serves the auction command, schedule its removal too
+
+---
+
+## P0 — Remove /professor ask command
+
+The `/professor ask` slash command was supposed to be replaced entirely by the @mention system.
+**Remove it:**
+1. Delete `src/commands/utility/professor.ts`
+2. Remove import/registration in `deploy-commands.ts`
+3. `npm run deploy:commands` to deregister from Discord
+4. The @mention path is the ONLY AI entry point going forward
+
+---
+
+## P0 — Card images missing in pack reveal (PACK-IMAGES-NULL)
+
+Some cards from the TCG API return `images: {}` or no images field.
+Affects: older sets (Base Set era), promos, some SV trainer cards.
+Current code in `packRevealHandler.ts`:
+```typescript
+if (card.imageLarge) embed.setImage(card.imageLarge);
+else if (card.imageSmall) embed.setThumbnail(card.imageSmall);
+// else: no image at all
 ```
-Modified:  COMMON_MISTAKES.md, docs/TASKS_NEXT_SESSION.md, src/commands/cards/pack.ts
-           src/handlers/packRevealHandler.ts, src/services/battleService.ts
-           src/services/pokemonTcgService.ts
-Deleted:   src/commands/economy/balance.ts, breeder.ts, daily.ts, deposit.ts,
-           fish.ts, fisher.ts, miner.ts, monthly.ts, ranger.ts, researcher.ts,
-           rocket.ts, weekly.ts, withdraw.ts
-Untracked: EXECUTIVE_SUMMARY_S12.md, S12_SESSION_HANDOFF.md, docs/BANK_REWARDS_CONSOLIDATION.md
-           docs/CARD_ECONOMY_REWORK.md, docs/CREATOR_DATA_PROVIDER_SYSTEM.md
-           docs/CREATOR_PLATFORM_ARCHITECTURE.md, docs/MOVE_DATA_AUDIT.md
-           docs/PACK_ECONOMY_V2.md, docs/PACK_OPENING_V3.md, docs/S11_CAREER_CLEANUP.md
-           docs/S11_CODEBASE_AUDIT.md, docs/S12_COMMAND_REDUCTION.md
-           docs/S12_PACK_STABILITY_REPORT.md, src/commands/economy/bank.ts
-           src/commands/economy/rewards.ts, src/commands/social/creator.ts
-           src/config/, src/providers/, src/services/cardValueService.ts
-           src/services/creatorService.ts
-```
-
-For **each file**, produce the audit table from the user's audit request and determine:
-1. Already committed? (check `git log`)
-2. Uncommitted S12 work that should be committed?
-3. Belongs to unfinished feature needing completion?
-4. Safe to discard?
-
-**Do not proceed to Battle V2 until audit is complete.**
+**Fix:** Either filter imageless cards out during `openPack()`, or add a placeholder
+card-back image URL as fallback. Placeholder option preferred — every card should
+show something.
 
 ---
 
-## P0 — Battle V2 Lite (implement after audit)
+## P0 — FK constraint on XP upsert for new users (DB-FK-GUILDUSER)
 
-All changes are code-only (no schema migration). Build clean, ready to implement.
-
-### Phase 1: Accuracy System
-- Wire `PokemonMove.accuracy` into attack resolution
-- `checkAccuracy(moveInfo.accuracy ?? 100)` before `calcDamage()`
-- If miss: log "X's attack missed!" and skip damage
-- Status moves skip accuracy check (they never miss in Gen 1/2 rules)
-
-### Phase 2: Speed-Based Turn Order Every Round
-- Add `roundLeaderId: string` to `BattleState` in `src/types/index.ts`
-- Set `roundLeaderId` at battle start: faster active Pokémon's owner goes first
-- After each attack: if current attacker was `roundLeaderId`, next is the follower; if follower, next is `roundLeaderId` (new round starts)
-- Recompute `roundLeaderId` after any Pokémon faints + is swapped (speed of new active Pokémon)
-- Paralysis penalty: paralyzed Pokémon's effective speed is halved for round priority
-
-### Phase 3: Critical Hit Display
-- Already implemented in `calcDamage()` at 6.25%
-- Missing: `💥 A critical hit!` in the battle log embed
-- Wire: `if (isCrit) currentState.battleLog.push('💥 Critical hit!')`
-
-### Phase 4: Status DoT (Burn/Poison applied each turn)
-- `applyStatusDamage()` exists in `battleService.ts` but is NEVER called in `battle.ts`
-- Call at the START of each turn, before move execution
-- If status kills the Pokémon, skip their move and proceed to faint check
-
-### Phase 5: Status Infliction (static table, not type heuristic)
-- Remove `tryInflictStatus()` or replace with move-name lookup
-- Extend `MOVE_TABLE` entries with optional `statusInflict?` and `effectChance?` fields
-- Only named moves in the static table can inflict status — unknown moves never do
-- Example table extensions:
-  ```typescript
-  ember:        { ..., statusInflict: 'burn', effectChance: 10 }
-  thunderbolt:  { ..., statusInflict: 'paralysis', effectChance: 10 }
-  toxic:        { ..., statusInflict: 'poison', effectChance: 100, category: 'Status' }
-  ```
-
-### Phase 6: Coin Rewards for Battle Win
-- Add `coinReward: number` computation in `saveBattleResult()`
-- Formula: 50 base + (turns × 2) + (ranked ? 100 : 0)
-- Award to winner: `addBalance(client.prisma, winnerId, coinReward)`
-- Show in victory embed: "You earned X coins!"
+`guildUser.upsert()` in `messageCreate.ts` fails for brand-new members with
+`guild_users_userId_fkey` FK violation because no `User` record exists yet.
+**Fix:** Call `ensureUser(client.prisma, userId)` before the `guildUser.upsert()` call.
+Also check `spawnService.ts` for the same pattern before `userPokemon.create`.
 
 ---
 
-## P0 — S12 Carry-Forward (from previous sessions)
+## P1 — Battle V2 Lite wiring into battle.ts
 
-### Career V2 Deploy (BLOCKING — files already deleted in working tree)
-The legacy career files appear deleted in `git status`. Verify they were intentionally removed. If so:
-1. Check `interactionCreate.ts` has no imports of deleted files
-2. `npm run build` clean
-3. `npm run deploy:commands` to deregister old commands
-
-### Redis URL on Railway (STILL BLOCKING pack open)
-`REDIS_URL` not set on Railway. Pack open will fail. Add Railway Redis add-on.
-
-### Bank + Rewards Consolidation
-`bank.ts` and `rewards.ts` exist as untracked files — possibly implemented in S12.
-Verify they build, then commit + deploy.
+Helpers are all committed in `battleService.ts` (`3333cb8`) — none are wired yet.
+Wire in this order:
+1. `applyStatusDamage()` at turn start before move
+2. `checkStatusBlock()` before move execution
+3. `checkAccuracy()` before `calcDamage()`
+4. `💥 Critical hit!` log line when `isCrit` is true
+5. Speed-based `roundLeaderId` recomputed each round
+6. Coin reward on battle win (50 + turns×2 + ranked?100:0)
 
 ---
 
-## Battle V2 Full (future session — needs schema work)
+## P1 — REDIS_URL on Railway
 
-Do NOT implement without schema migration decision. See `docs/MOVE_DATA_AUDIT.md`.
+Verify `REDIS_URL` is set in Railway env vars. If not, add Railway Redis add-on.
+`client.redis.isReady` guards are in place — the bot won't crash, but pack sessions
+and cooldowns won't persist across the current backoff window.
 
-Requirements:
-- Add `statusInflict String?`, `effectChance Int?`, `priority Int @default(0)` to `PokemonMove`
-- PokeAPI re-seed script: fetch `api/v2/move/{name}` for all moves, populate new fields
-- ~500 API calls, ~1-2 day effort
-- Enables: move-specific status effects, Quick Attack priority, recoil moves
+---
+
+## P1 — /deploy-commands after /bank and /rewards
+
+`/bank` and `/rewards` commands were committed (`ceed1ea`) but `/deploy-commands`
+has not been run since then. New slash commands won't appear in Discord until this runs.
+Run: `npm run deploy:commands` (or the `/deploy-commands` slash command if registered).
 
 ---
 
 ## Carry-Forward Bugs
 
-| ID | File | Description | Priority |
-|----|------|-------------|----------|
-| REDIS-URL-RAILWAY | Railway env | `REDIS_URL` not set → pack open broken | 🔴 P0 |
-| BATTLE-SPEED-ROUND | battle.ts | Speed only determines first turn, not each round | 🔴 P0 |
-| BATTLE-STATUS-DOT | battle.ts | `applyStatusDamage()` never called → burn/poison do nothing | 🔴 P0 |
-| BATTLE-ACCURACY | battle.ts | `checkAccuracy()` never called → moves never miss | 🟡 P1 |
-| BATTLE-STATUS-TYPE | battleService.ts | `tryInflictStatus()` uses type heuristic, should be move-specific | 🟡 P1 |
-| BATTLE-CRIT-LOG | battle.ts | Crit computed but no 💥 in battle log | 🟢 P2 |
-| QUEST-SILENT | questService.ts | No DM/notification on quest completion | 🟡 P1 |
-| CARD-MARKETVALUE-NULL | packRevealHandler.ts | Card.marketValue never populated | 🟡 P1 |
+| ID | Description | Priority |
+|----|-------------|----------|
+| GRIMBOT-OFFLINE | @mention AI returns "terminal offline" — GROQ_API_KEY or model issue | 🔴 P0 |
+| AUCTION-EXISTS | /auction command never removed | 🔴 P0 |
+| PROFESSOR-EXISTS | /professor ask never removed | 🔴 P0 |
+| PACK-IMAGES-NULL | Some cards have no image in pack reveal embeds | 🔴 P0 |
+| DB-FK-GUILDUSER | XP upsert fails FK constraint for new users | 🟡 P1 |
+| REDIS-URL-RAILWAY | REDIS_URL may not be set in Railway | 🟡 P1 |
+| BATTLE-STATUS-DOT | applyStatusDamage() never called | 🔴 P0 |
+| BATTLE-ACCURACY | checkAccuracy() never called | 🟡 P1 |
+| BATTLE-SPEED-ROUND | Speed only determines first turn, not each round | 🟡 P1 |
+| BATTLE-CRIT-LOG | Crit computed but no log line | 🟢 P2 |
+| QUEST-SILENT | No DM on quest completion | 🟡 P1 |
 
 ---
 
-## S13B Completed Deliverables
+## S14 Completed Deliverables
 
 | Feature | Status | Commit |
 |---------|--------|--------|
-| @mention AI silent crash fix | ✅ Committed | 1feb448 |
-| Battle damage formula fix | ✅ Committed | 1feb448 |
-| STAB implementation | ✅ Committed | 1feb448 |
-| Type effectiveness implementation | ✅ Committed | 1feb448 |
-| `BattlePokemon.types[]` field | ✅ Committed | 1feb448 |
-| Batch PokemonMove loading (no N+1) | ✅ Committed | 1feb448 |
-| `MOVE_TABLE` static fallback (50 moves) | ✅ Committed | 1feb448 |
-| Battle simulation validation script | ✅ Committed | 1feb448 |
-| `docs/AI_MENTION_SYSTEM.md` | ✅ Committed | 1feb448 |
-| `docs/BATTLE_SYSTEM_AUDIT.md` | ✅ Committed | 1feb448 |
-| `docs/MOVE_DATA_AUDIT.md` | ⚠️ Uncommitted | pending |
-| `COMMON_MISTAKES.md` (entries #09-#11) | ⚠️ Uncommitted | pending |
+| Repository audit (S11/S12 uncommitted work) | ✅ | Multiple |
+| Groq diagnostic logging + missing-key guard | ✅ | 674d971 |
+| Economy consolidation (13 files removed, /bank + /rewards) | ✅ | ceed1ea |
+| Pack Economy V2 (5-tier pricing) | ✅ | 775320b |
+| Pack Opening V3 (rich card embeds, market value) | ✅ | 775320b |
+| Battle V2 Lite helpers (not yet wired) | ✅ | 3333cb8 |
+| Pack open interaction timeout fix (deferUpdate) | ✅ | a9d76e0 |
+| Pack tier + cost shown in autocomplete | ✅ | a9d76e0 |
+| S14 session docs | ✅ | pending |
+| @grimbot root cause identified (model decommissioned → fixed in code, not verified live) | ⚠️ | 674d971 |
 
 ---
 
 ## Arch Reminders
 
 - `addXp(prisma, userId, N)` — never raw `trainerXp: { increment: N }`
-- `transferBalance` throws `'INSUFFICIENT_FUNDS'` — always catch and rollback
-- `calcDamage()` in `battleService.ts` is the ONLY place damage is computed — never inline
-- `PokemonMove` may be empty for most Pokémon — always fall back to `MOVE_TABLE`
-- `checkStatusBlock()` must be called before move execution each turn
-- `applyStatusDamage()` must be called at turn start before move execution
-- Redis: always check `client.redis.isReady` before any Redis call
-- Button customId prefix must be registered in `interactionCreate.ts` or silently fails
-- After schema changes: `npx prisma generate` → `npm run build` → `npm run db:push`
+- `transferBalance` throws `'INSUFFICIENT_FUNDS'` — always catch
+- `calcDamage()` in `battleService.ts` is the ONLY damage source — never inline
+- `PokemonMove` rows may not exist — always fall back to `MOVE_TABLE`
+- Button customId prefix must be in `interactionCreate.ts` or silently fails
+- After schema: `npx prisma generate` → `npm run build` → `npm run db:push`
+- Pack itemId format: `pack:${setId}` — never use set name
+- `client.redis.isReady` check before every Redis call
+- Discord slash command `.setDescription()` max 100 chars — exceeding = Railway crash

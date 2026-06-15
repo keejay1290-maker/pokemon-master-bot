@@ -190,6 +190,23 @@ const effectiveness = 1.0; // placeholder, getTypeEffectiveness() was imported b
 
 ---
 
+## Common Mistakes #12 — Some TCG API cards have no images
+
+**Issue (S14):** `packRevealHandler.ts` sets `embed.setImage(card.imageLarge)` only when the field is truthy. Some cards returned by the Pokémon TCG API have `images: {}` or no `images` field at all — particularly Base Set era cards, promo cards, and some Scarlet & Violet trainer cards. This results in pack reveal embeds with no card art.
+
+**Symptom:** Pack opens successfully, cards are revealed, but some embed frames show no image.
+
+**Rule:** Never assume a card from the TCG API has a valid image. Always provide a fallback:
+```typescript
+if (card.imageLarge) embed.setImage(card.imageLarge);
+else if (card.imageSmall) embed.setThumbnail(card.imageSmall);
+else embed.setThumbnail(CARD_BACK_PLACEHOLDER_URL); // generic card back
+```
+
+**Fix path:** Add a `CARD_BACK_PLACEHOLDER_URL` constant in `packRevealHandler.ts` pointing to a hosted card-back image. Use it as the final fallback so every reveal frame shows something.
+
+---
+
 ## Architecture Reminders
 
 - `addXp(prisma, userId, N)` — never raw `trainerXp: { increment: N }`. Use service function.
