@@ -1,6 +1,7 @@
 import { ButtonInteraction, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import type { BotClient } from '../types/index.js';
 import { formatNumber } from '../utils/embeds.js';
+import { calculateMarketValue } from '../services/cardValueService.js';
 
 export interface PackSession {
   userId: string;
@@ -22,6 +23,14 @@ export interface ResolvedCard {
   imageLarge?: string | null;
   number: string;
   isNew: boolean;
+  // P6 V3 fields:
+  hp?: string | null;
+  types?: string[];
+  subtypes?: string[];
+  attacks?: Array<{ name: string; damage: string; cost: string[] }>;
+  weaknesses?: Array<{ type: string; value: string }>;
+  retreatCost?: number | null;
+  marketValue?: number;
 }
 
 const RARITY_EMOJI: Record<string, string> = {
@@ -54,20 +63,52 @@ function buildRevealEmbed(session: PackSession, card: ResolvedCard, cardNum: num
   const emoji = RARITY_EMOJI[card.rarity] ?? '⚪';
   const badge = card.isNew ? '✨ **NEW**' : '♻️ **DUPLICATE**';
 
+  // Build type display
+  const typeIcons: Record<string, string> = {
+    'Colorless': '⬜', 'Darkness': '⬛', 'Dragon': '🐉',
+    'Fairy': '🌸', 'Fighting': '💪', 'Fire': '🔥',
+    'Grass': '🌿', 'Lightning': '⚡', 'Metal': '⚙️',
+    'Psychic': '🔮', 'Water': '💧',
+  };
+  const typesDisplay = card.types?.map((t) => typeIcons[t] ?? t).join(' ') ?? '';
+  const hpDisplay = card.hp ? `HP: ${card.hp}` : '';
+
+  // Build attacks display
+  const attacksDisplay = card.attacks?.slice(0, 2).map((a) =>
+    `${a.cost.map((c) => typeIcons[c] ?? c).join('')} **${a.name}** — ${a.damage || '?'}`
+  ).join('\n') ?? '';
+
+  // Build weakness/retreat
+  const weaknessDisplay = card.weaknesses?.map((w) => `${typeIcons[w.type] ?? w.type} ×${w.value}`).join(', ') ?? '';
+  const retreatDisplay = card.retreatCost != null ? `${'⬛'.repeat(card.retreatCost)}` : '';
+  const valueDisplay = card.marketValue != null ? `💰 **${formatNumber(card.marketValue)}**` : '';
+
   const embed = new EmbedBuilder()
     .setColor(card.isNew ? 0xffd700 : 0x888888)
     .setTitle(`Card ${cardNum} of ${total}`)
-    .setDescription(`${badge}  |  ${emoji} ${card.rarity}\n**${card.name}** — #${card.number}`)
+    .setDescription(
+      `${badge}  |  ${emoji} ${card.rarity}\n` +
+      `**${card.name}** — #${card.number}\n` +
+      `${hpDisplay}${hpDisplay && typesDisplay ? ' | ' : ''}${typesDisplay}`
+    )
     .addFields(
       { name: 'Set', value: session.setName, inline: true },
-      { name: 'Cards Remaining', value: `${remaining}`, inline: true },
       { name: 'Progress', value: progressBar(revealed, total), inline: false },
-    )
-    .setTimestamp();
+    );
+
+  if (attacksDisplay) embed.addFields({ name: '⚔️ Attacks', value: attacksDisplay, inline: false });
+  if (weaknessDisplay || retreatDisplay) {
+    const w = weaknessDisplay ? `Weakness: ${weaknessDisplay}` : '';
+    const r = retreatDisplay ? `Retreat: ${retreatDisplay}` : '';
+    embed.addFields({ name: '⚖️ Weakness / Retreat', value: [w, r].filter(Boolean).join(' | '), inline: false });
+  }
+  if (valueDisplay) embed.addFields({ name: '💰 Est. Value', value: valueDisplay, inline: true });
+  embed.addFields({ name: 'Cards Remaining', value: `${remaining}`, inline: true });
 
   if (card.imageLarge) embed.setImage(card.imageLarge);
   else if (card.imageSmall) embed.setThumbnail(card.imageSmall);
 
+  embed.setTimestamp();
   return embed;
 }
 
@@ -91,9 +132,16 @@ function buildSummaryEmbed(session: PackSession): EmbedBuilder {
     (a, b) => (RARITY_RANK[b.rarity] ?? 0) - (RARITY_RANK[a.rarity] ?? 0)
   )[0];
 
-  const emoji = bestCard ? (RARITY_EMOJI[bestCard.rarity] ?? '⚪') : '⚪';
+  // Find best value card
+  const bestValue = [...session.cards].sort((a, b) => (b.marketValue ?? 0) - (a.marketValue ?? 0))[0];
 
-  return new EmbedBuilder()
+  // Calculate total value
+  const totalValue = session.cards.reduce((sum, c) => sum + (c.marketValue ?? 0), 0);
+
+  const emoji = bestCard ? (RARITY_EMOJI[bestCard.rarity] ?? '⚪') : '⚪';
+  const valueEmoji = bestValue ? (RARITY_EMOJI[bestValue.rarity] ?? '⚪') : '⚪';
+
+  const embed = new EmbedBuilder()
     .setColor(0x00ff88)
     .setTitle(`📦 Pack Complete — ${session.setName}`)
     .addFields(
@@ -101,8 +149,12 @@ function buildSummaryEmbed(session: PackSession): EmbedBuilder {
       { name: '✨ New Cards', value: `${session.newCardIds.length}`, inline: true },
       { name: '♻️ Duplicates', value: `${session.dupCardIds.length}`, inline: true },
       { name: '⭐ Best Pull', value: bestCard ? `${emoji} ${bestCard.name} (${bestCard.rarity})` : 'None', inline: false },
+      { name: '💰 Total Value', value: totalValue > 0 ? `**${formatNumber(totalValue)} PokéCoins**` : 'N/A', inline: true },
+      { name: '🏆 Best Value', value: bestValue && bestValue.marketValue ? `${valueEmoji} ${bestValue.name} — **${formatNumber(bestValue.marketValue)}**` : 'N/A', inline: true },
     )
     .setTimestamp();
+
+  return embed;
 }
 
 function revealButton(sessionId: string, disabled = false) {
@@ -142,7 +194,7 @@ export async function handlePackReveal(interaction: ButtonInteraction, client: B
   const sessionKey = `pack:session:${sessionId}`;
 
   // Atomic lock — prevents double-click race conditions
-  const locked = await client.redis.set(lockKey, '1', { NX: true, EX: 5 });
+  const locked = await client.redis.set(lockKey, '1', { NX: true, EX: 15 });
   if (!locked) {
     await interaction.reply({ content: '⏳ Already revealing, please wait...', ephemeral: true });
     return;
@@ -171,10 +223,13 @@ export async function handlePackReveal(interaction: ButtonInteraction, client: B
 
     const cardNum = session.currentIndex + 1;
 
+    // Calculate market value for this card
+    const marketValue = card.marketValue ?? calculateMarketValue(card.rarity, session.setId, card.name);
+
     // Write this card to the user's collection NOW (one card per reveal)
     await client.prisma.card.upsert({
       where: { id: card.id },
-      update: {},
+      update: { marketValue },
       create: {
         id: card.id,
         name: card.name,
@@ -187,6 +242,7 @@ export async function handlePackReveal(interaction: ButtonInteraction, client: B
         rarity: card.rarity,
         imageSmall: card.imageSmall ?? null,
         imageLarge: card.imageLarge ?? null,
+        marketValue,
       },
     });
 
@@ -222,7 +278,7 @@ export async function handlePackReveal(interaction: ButtonInteraction, client: B
       });
     } else {
       // Update session in Redis
-      await client.redis.set(sessionKey, JSON.stringify(session), { EX: 600 });
+      await client.redis.set(sessionKey, JSON.stringify(session), { EX: 900 });
 
       const embed = buildRevealEmbed(session, card, cardNum);
       await interaction.update({
@@ -287,7 +343,7 @@ export async function createPackSession(
     revealedCardIds: [],
   };
 
-  await client.redis.set(`pack:session:${sessionId}`, JSON.stringify(session), { EX: 600 });
+  await client.redis.set(`pack:session:${sessionId}`, JSON.stringify(session), { EX: 900 });
 
   return {
     sessionId,

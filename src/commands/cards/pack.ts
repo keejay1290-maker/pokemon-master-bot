@@ -8,8 +8,9 @@ import { formatNumber } from '../../utils/embeds.js';
 import { checkAndAwardAchievements } from '../../services/achievementService.js';
 import { incrementQuestProgress } from '../../services/questService.js';
 import { createPackSession, type ResolvedCard } from '../../handlers/packRevealHandler.js';
+import { getPackCost, getPackTier, getPackSize, TIER_CONFIGS } from '../../config/pack-tiers.js';
 
-const PACK_COST = 500;
+const PACK_COST = 500; // default fallback
 
 const command: Command = {
   data: new SlashCommandBuilder()
@@ -56,6 +57,7 @@ async function handleBuy(interaction: ChatInputCommandInteraction, client: BotCl
 
   let setId = setIdInput;
   let setName = 'Random Set';
+  let tier = 'C';
 
   if (setId) {
     const sets = await fetchSets(client);
@@ -72,13 +74,16 @@ async function handleBuy(interaction: ChatInputCommandInteraction, client: BotCl
     if (pick) { setId = pick.id; setName = pick.name; }
   }
 
+  const cost = setId ? getPackCost(setId) : PACK_COST;
+  tier = setId ? getPackTier(setId) : 'C';
+
   try {
     await client.prisma.$transaction(async (tx) => {
       const u = await tx.user.findUnique({ where: { id: interaction.user.id } });
-      if (!u || u.balance < PACK_COST) throw new Error('INSUFFICIENT_FUNDS');
+      if (!u || u.balance < cost) throw new Error('INSUFFICIENT_FUNDS');
       await tx.user.update({
         where: { id: interaction.user.id },
-        data: { balance: { decrement: PACK_COST }, totalSpent: { increment: PACK_COST } },
+        data: { balance: { decrement: cost }, totalSpent: { increment: cost } },
       });
       await tx.userInventory.upsert({
         where: { userId_itemId: { userId: interaction.user.id, itemId: `pack:${setId}` } },
@@ -89,7 +94,7 @@ async function handleBuy(interaction: ChatInputCommandInteraction, client: BotCl
   } catch (e: any) {
     if (e.message === 'INSUFFICIENT_FUNDS') {
       const u = await client.prisma.user.findUnique({ where: { id: interaction.user.id } });
-      await interaction.editReply(`❌ You need **${formatNumber(PACK_COST)} PokéCoins** to buy a pack. You have **${formatNumber(u?.balance ?? 0)}**.`);
+      await interaction.editReply(`❌ You need **${formatNumber(cost)} PokéCoins** to buy a pack. You have **${formatNumber(u?.balance ?? 0)}**.`);
     } else {
       console.error(e);
       await interaction.editReply('❌ An error occurred. Please try again.');
@@ -108,7 +113,8 @@ async function handleBuy(interaction: ChatInputCommandInteraction, client: BotCl
       .setTitle('📦 Pack Purchased!')
       .setDescription(`Added **${setName} Pack** to your inventory.`)
       .addFields(
-        { name: '💰 Cost', value: `${formatNumber(PACK_COST)} PokéCoins`, inline: true },
+        { name: '💰 Cost', value: `${formatNumber(cost)} PokéCoins`, inline: true },
+        { name: '📦 Tier', value: `Tier ${tier}`, inline: true },
         { name: '📦 Owned (this set)', value: `${inv?.quantity ?? 1}`, inline: true },
       )
       .setFooter({ text: 'Open with /pack open' })
@@ -259,14 +265,24 @@ async function handleOpen(interaction: ChatInputCommandInteraction, client: BotC
 
     const resolvedCards: ResolvedCard[] = rawCards.map((c) => {
       const card = c as Record<string, unknown>;
+      const images = card.images as Record<string, unknown> | undefined;
+      const attacks = card.attacks as Array<{ name: string; damage: string; cost: string[] }> | undefined;
+      const weaknesses = card.weaknesses as Array<{ type: string; value: string }> | undefined;
       return {
         id: card.id as string,
         name: card.name as string,
         rarity: (card.rarity as string) ?? 'Common',
-        imageSmall: ((card.images as Record<string, unknown>)?.small) as string | null,
-        imageLarge: ((card.images as Record<string, unknown>)?.large) as string | null,
+        imageSmall: (images?.small as string) ?? null,
+        imageLarge: (images?.large as string) ?? null,
         number: (card.number as string) ?? '0',
         isNew: !ownedIds.has(card.id as string),
+        hp: (card.hp as string) ?? null,
+        types: (card.types as string[]) ?? undefined,
+        subtypes: (card.subtypes as string[]) ?? undefined,
+        attacks: attacks?.slice(0, 2) ?? undefined,
+        weaknesses: weaknesses?.slice(0, 2) ?? undefined,
+        retreatCost: (card.retreatCost as number) ?? undefined,
+        marketValue: undefined, // calculated during reveal
       };
     });
 
@@ -299,9 +315,15 @@ async function handleOpen(interaction: ChatInputCommandInteraction, client: BotC
     // Fire-and-forget quest/achievement tracking for opening a pack
     incrementQuestProgress(client.prisma, interaction.user.id, 'open_pack', 1).catch(() => {});
     checkAndAwardAchievements(client, interaction.user.id, interaction.channelId, interaction.guild?.id).catch(() => {});
-  } catch {
-    // Timeout or error — disable components
-    await interaction.editReply({ components: [] }).catch(() => {});
+  } catch (e: any) {
+    const isTimeout = e?.code === 'InteractionCollectorError' || e?.message?.includes('timeout');
+    await interaction.editReply({
+      content: isTimeout
+        ? '⌛ Selection timed out. Use `/pack open` to try again.'
+        : '❌ An error occurred. Please use `/pack open` to start again.',
+      embeds: [],
+      components: [],
+    }).catch(() => {});
   }
 }
 
