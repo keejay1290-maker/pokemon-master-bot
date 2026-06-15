@@ -214,13 +214,83 @@ export function applyStatStage(base: number, stage: number): number {
 export function applyStatusDamage(pokemon: BattlePokemon): { damage: number; message: string } {
   if (pokemon.statusEffect === 'poison') {
     const damage = Math.max(1, Math.floor(pokemon.maxHp / 8));
-    return { damage, message: `${pokemon.name} is hurt by poison! (-${damage} HP)` };
+    return { damage, message: `🟣 ${pokemon.name} is hurt by poison! (-${damage} HP)` };
   }
   if (pokemon.statusEffect === 'burn') {
     const damage = Math.max(1, Math.floor(pokemon.maxHp / 16));
-    return { damage, message: `${pokemon.name} is hurt by its burn! (-${damage} HP)` };
+    return { damage, message: `🔥 ${pokemon.name} is hurt by its burn! (-${damage} HP)` };
   }
   return { damage: 0, message: '' };
+}
+
+/** Returns whether the move hits, based on its accuracy field. */
+export function checkAccuracy(accuracy: number): boolean {
+  if (accuracy >= 100) return true;
+  return Math.random() * 100 < accuracy;
+}
+
+/**
+ * Returns { blocked, message, cured } for sleep/freeze/paralysis.
+ * Mutates pokemon.statusEffect / statusTurns if status is cured.
+ */
+export function checkStatusBlock(pokemon: BattlePokemon): { blocked: boolean; message: string; cured: boolean } {
+  if (pokemon.statusEffect === 'sleep') {
+    // 33% chance to wake each turn
+    if (Math.random() < 0.33) {
+      pokemon.statusEffect = undefined;
+      return { blocked: false, message: `😴 ${pokemon.name} woke up!`, cured: true };
+    }
+    return { blocked: true, message: `😴 ${pokemon.name} is fast asleep!`, cured: false };
+  }
+  if (pokemon.statusEffect === 'freeze') {
+    // 20% chance to thaw each turn
+    if (Math.random() < 0.20) {
+      pokemon.statusEffect = undefined;
+      return { blocked: false, message: `🧊 ${pokemon.name} thawed out!`, cured: true };
+    }
+    return { blocked: true, message: `🧊 ${pokemon.name} is frozen solid!`, cured: false };
+  }
+  if (pokemon.statusEffect === 'paralysis') {
+    // 25% fully paralyzed
+    if (Math.random() < 0.25) {
+      return { blocked: true, message: `⚡ ${pokemon.name} is fully paralyzed! It can't move!`, cured: false };
+    }
+  }
+  return { blocked: false, message: '', cured: false };
+}
+
+/** Returns the status to inflict on defender from a move, or undefined if none. */
+export function tryInflictStatus(
+  moveType: string,
+  category: string,
+  defender: BattlePokemon
+): string | undefined {
+  if (category === 'Status' || defender.statusEffect) return undefined;
+
+  const type = moveType.toLowerCase();
+  const defTypes = defender.types.map((t) => t.toLowerCase());
+
+  // Fire move → 10% burn (immune: Fire types)
+  if (type === 'fire' && !defTypes.includes('fire') && Math.random() < 0.10) return 'burn';
+  // Poison/Bug move → 30% poison (immune: Poison, Steel)
+  if ((type === 'poison') && !defTypes.includes('poison') && !defTypes.includes('steel') && Math.random() < 0.30) return 'poison';
+  // Electric move → 10% paralysis (immune: Electric types)
+  if (type === 'electric' && !defTypes.includes('electric') && Math.random() < 0.10) return 'paralysis';
+  // Ice move → 10% freeze (immune: Ice types)
+  if (type === 'ice' && !defTypes.includes('ice') && Math.random() < 0.10) return 'freeze';
+
+  return undefined;
+}
+
+export function statusLabel(status?: string): string {
+  const labels: Record<string, string> = {
+    burn: '🔥 BRN',
+    poison: '🟣 PSN',
+    paralysis: '⚡ PAR',
+    sleep: '😴 SLP',
+    freeze: '🧊 FRZ',
+  };
+  return status ? (labels[status] ?? status.toUpperCase()) : '';
 }
 
 export function checkFainted(pokemon: BattlePokemon): boolean {
