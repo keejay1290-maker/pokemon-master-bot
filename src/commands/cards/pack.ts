@@ -37,8 +37,14 @@ const command: Command = {
     }
     const sets = await fetchSets(client);
     const focused = interaction.options.getFocused().toLowerCase();
+    const tierOrder: Record<string, number> = { S: 0, A: 1, B: 2, C: 3, D: 4 };
     const filtered = (sets as Array<{ id: string; name: string }>)
-      .filter((s) => s.name.toLowerCase().includes(focused))
+      .filter((s) => s.name.toLowerCase().includes(focused) || s.id.toLowerCase().includes(focused))
+      .sort((a, b) => {
+        const ta = tierOrder[getPackTier(a.id)] ?? 5;
+        const tb = tierOrder[getPackTier(b.id)] ?? 5;
+        return ta - tb;
+      })
       .slice(0, 25);
     await interaction.respond(filtered.map((s) => {
       const tier = getPackTier(s.id);
