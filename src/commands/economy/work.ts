@@ -110,7 +110,11 @@ const command: Command = {
     const jobName = interaction.options.getString('job', true);
     const job = JOBS.find((j) => j.name === jobName)!;
 
-    const { onCooldown, remaining } = await checkCooldown(client, interaction.user.id, `work:${jobName}`, job.cooldown);
+    // Shared cooldown across all /work jobs — one shift per cooldown window
+    const guild = await client.prisma.guild.findUnique({ where: { id: interaction.guild?.id ?? '' } });
+    const cooldown = guild?.workCooldown ?? job.cooldown;
+
+    const { onCooldown, remaining } = await checkCooldown(client, interaction.user.id, 'work', cooldown);
     if (onCooldown) {
       await interaction.reply({
         embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('⏰ Tired!')
@@ -120,8 +124,7 @@ const command: Command = {
       return;
     }
 
-    const guild = await client.prisma.guild.findUnique({ where: { id: interaction.guild?.id ?? '' } });
-    const cooldown = guild?.workCooldown ?? job.cooldown;
+    await interaction.deferReply();
 
     // Determine outcome
     const roll = Math.random();
@@ -141,7 +144,7 @@ const command: Command = {
       }
     }
 
-    await setCooldown(client, interaction.user.id, `work:${jobName}`, cooldown);
+    await setCooldown(client, interaction.user.id, 'work', cooldown);
 
     // Apply Amulet Coin: double work rewards
     let amuletBonus = false;
@@ -219,7 +222,7 @@ const command: Command = {
     if (leveledUp) embed.addFields({ name: '🎉 Trainer Level Up!', value: `You reached **Trainer Level ${newLevel}**!`, inline: false });
     embed.addFields({ name: '⏰ Next Shift', value: formatDuration(cooldown), inline: true }).setTimestamp();
 
-    await interaction.reply({ embeds: [embed] });
+    await interaction.editReply({ embeds: [embed] });
   },
 };
 

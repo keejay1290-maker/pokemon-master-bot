@@ -8,7 +8,7 @@ import { formatNumber } from '../../utils/embeds.js';
 import { checkAndAwardAchievements } from '../../services/achievementService.js';
 import { incrementQuestProgress } from '../../services/questService.js';
 import { createPackSession, type ResolvedCard } from '../../handlers/packRevealHandler.js';
-import { getPackCost, getPackTier, getPackSize, TIER_CONFIGS } from '../../config/pack-tiers.js';
+import { getPackCost, getPackTier } from '../../config/pack-tiers.js';
 
 const PACK_COST = 500; // default fallback
 
@@ -18,8 +18,8 @@ const command: Command = {
     .setDescription('Buy, open, or view your TCG card packs')
     .addSubcommand((sub) =>
       sub.setName('buy')
-        .setDescription(`Buy a pack for ${formatNumber(PACK_COST)} PokéCoins and add to your inventory`)
-        .addStringOption((o) => o.setName('set').setDescription('Card set to buy (optional)').setAutocomplete(true))
+        .setDescription('Buy a TCG pack — cost varies by set tier (200–10,000 coins). Use autocomplete to see prices.')
+        .addStringOption((o) => o.setName('set').setDescription('Card set to buy (optional — autocomplete shows tier & cost)').setAutocomplete(true))
     )
     .addSubcommand((sub) =>
       sub.setName('open')

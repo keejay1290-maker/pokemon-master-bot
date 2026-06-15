@@ -255,15 +255,18 @@ async function handleWork(interaction: ChatInputCommandInteraction, client: BotC
   const career = CAREERS[careerName];
   if (!career) { await interaction.reply({ content: '❌ Unknown career.', ephemeral: true }); return; }
 
-  const { onCooldown, remaining } = await checkCooldown(client, interaction.user.id, career.cooldownKey, career.cooldown);
-  if (onCooldown) {
-    await interaction.reply({
-      embeds: [new EmbedBuilder().setColor(0xff4444).setTitle(`⏰ ${careerName} Cooldown`)
-        .setDescription(`Come back in **${formatDuration(remaining!)}**.`)],
-      ephemeral: true,
-    });
-    return;
-  }
+  try {
+    const { onCooldown, remaining } = await checkCooldown(client, interaction.user.id, career.cooldownKey, career.cooldown);
+    if (onCooldown) {
+      await interaction.reply({
+        embeds: [new EmbedBuilder().setColor(0xff4444).setTitle(`⏰ ${careerName} Cooldown`)
+          .setDescription(`Come back in **${formatDuration(remaining!)}**.`)],
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.deferReply();
 
   const jobRecord = await client.prisma.userJob.findUnique({
     where: { userId_jobName: { userId: interaction.user.id, jobName: careerName } },
@@ -339,7 +342,15 @@ async function handleWork(interaction: ChatInputCommandInteraction, client: BotC
   if (trainerLeveledUp) embed.addFields({ name: '🎉 Trainer Level Up!', value: `You reached **Trainer Level ${newLevel}**!`, inline: false });
   embed.setFooter({ text: `Use /career shop ${careerName.toLowerCase()} to upgrade your equipment` }).setTimestamp();
 
-  await interaction.reply({ embeds: [embed] });
+  await interaction.editReply({ embeds: [embed] });
+  } catch (err) {
+    console.error(`[career work ${careerName}]`, err);
+    if (interaction.deferred) {
+      await interaction.editReply({ content: '❌ An error occurred. Please try again.' }).catch(() => {});
+    } else if (!interaction.replied) {
+      await interaction.reply({ content: '❌ An error occurred. Please try again.', ephemeral: true }).catch(() => {});
+    }
+  }
 }
 
 // ── SHOP ─────────────────────────────────────────────────────────────────────
