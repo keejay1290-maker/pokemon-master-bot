@@ -1,73 +1,70 @@
 import {
   SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle,
 } from 'discord.js';
 import type { BotClient, Command } from '../../types/index.js';
 
 const PAGE_SIZE = 10;
+type Tab = 'summary' | 'last' | 'collection';
 
-const command: Command = {
-  data: new SlashCommandBuilder()
-    .setName('pokedex')
-    .setDescription('Browse your Pokédex — caught Pokémon with sprites and stats')
-    .addStringOption((o) =>
-      o.setName('view')
-        .setDescription('What to show')
-        .addChoices(
-          { name: '📊 Summary', value: 'summary' },
-          { name: '🖼️ Recent Catches (with images)', value: 'recent' },
-        )
-    )
-    .addUserOption((o) => o.setName('user').setDescription("View another trainer's Pokédex")),
+// ── Component builders ────────────────────────────────────────────────────────
 
-  async execute(interaction: ChatInputCommandInteraction, client: BotClient) {
-    await interaction.deferReply();
-    const view = interaction.options.getString('view') ?? 'summary';
-    const target = interaction.options.getUser('user') ?? interaction.user;
+function tabRow(active: Tab, collectionPage = 0) {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId('pdex:summary')
+      .setLabel('📊 Summary')
+      .setStyle(active === 'summary' ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('pdex:last')
+      .setLabel('⭐ Last Caught')
+      .setStyle(active === 'last' ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`pdex:collection:0`)
+      .setLabel('📋 Collection')
+      .setStyle(active === 'collection' ? ButtonStyle.Primary : ButtonStyle.Secondary),
+  );
+}
 
-    if (view === 'recent') {
-      await showRecentCatches(interaction, client, target.id, target.username, 0);
-    } else {
-      await showSummary(interaction, client, target.id, target.username, target.displayAvatarURL());
-    }
-  },
-};
+function pageRow(page: number, totalPages: number) {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`pdex:prev:${page}`)
+      .setLabel('◀ Prev')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page === 0),
+    new ButtonBuilder()
+      .setCustomId('pdex:pageinfo')
+      .setLabel(`${page + 1} / ${totalPages}`)
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(true),
+    new ButtonBuilder()
+      .setCustomId(`pdex:next:${page}`)
+      .setLabel('Next ▶')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page >= totalPages - 1),
+  );
+}
 
-async function showSummary(
-  interaction: ChatInputCommandInteraction,
+// ── View builders (return { embeds, components }) ─────────────────────────────
+
+async function buildSummary(
   client: BotClient,
   userId: string,
   username: string,
   avatarUrl: string,
 ) {
   const [caughtIds, totalPokemon, rarities, recentCatch] = await Promise.all([
-    client.prisma.userPokemon.findMany({
-      where: { userId },
-      select: { pokemonId: true },
-      distinct: ['pokemonId'],
-    }),
+    client.prisma.userPokemon.findMany({ where: { userId }, select: { pokemonId: true }, distinct: ['pokemonId'] }),
     client.prisma.pokemon.count(),
-    client.prisma.userPokemon.findMany({
-      where: { userId },
-      include: { pokemon: { select: { rarity: true } } },
-      distinct: ['pokemonId'],
-    }),
-    client.prisma.userPokemon.findFirst({
-      where: { userId },
-      include: { pokemon: true },
-      orderBy: { caughtAt: 'desc' },
-    }),
+    client.prisma.userPokemon.findMany({ where: { userId }, include: { pokemon: { select: { rarity: true } } }, distinct: ['pokemonId'] }),
+    client.prisma.userPokemon.findFirst({ where: { userId }, include: { pokemon: true }, orderBy: { caughtAt: 'desc' } }),
   ]);
 
   const caughtCount = caughtIds.length;
   const percent = totalPokemon > 0 ? ((caughtCount / totalPokemon) * 100).toFixed(1) : '0';
-
   const rarityCounts: Record<string, number> = {};
-  for (const r of rarities) {
-    rarityCounts[r.pokemon.rarity] = (rarityCounts[r.pokemon.rarity] ?? 0) + 1;
-  }
-
-  const shinyCaught = rarities.filter((r) => (r as any).isShiny).length;
+  for (const r of rarities) rarityCounts[r.pokemon.rarity] = (rarityCounts[r.pokemon.rarity] ?? 0) + 1;
 
   const fillBars = Math.round((caughtCount / Math.max(totalPokemon, 1)) * 20);
   const progressBar = '█'.repeat(fillBars) + '░'.repeat(20 - fillBars);
@@ -85,7 +82,6 @@ async function showSummary(
       { name: '🟠 Legendary', value: `${rarityCounts['Legendary'] ?? 0}`, inline: true },
       { name: '🔴 Mythical',  value: `${rarityCounts['Mythical']  ?? 0}`, inline: true },
     )
-    .setFooter({ text: 'Use /pokedex view:Recent Catches to see Pokémon with images' })
     .setTimestamp();
 
   if (recentCatch?.pokemon.artworkUrl) {
@@ -97,11 +93,48 @@ async function showSummary(
     });
   }
 
-  await interaction.editReply({ embeds: [embed] });
+  return { embeds: [embed], components: [tabRow('summary')] };
 }
 
-async function showRecentCatches(
-  interaction: ChatInputCommandInteraction,
+async function buildLastCaught(
+  client: BotClient,
+  userId: string,
+  username: string,
+) {
+  const latest = await client.prisma.userPokemon.findFirst({
+    where: { userId },
+    include: { pokemon: true },
+    orderBy: { caughtAt: 'desc' },
+  });
+
+  if (!latest) {
+    return {
+      embeds: [new EmbedBuilder()
+        .setColor(0x888888)
+        .setTitle(`⭐ ${username}'s Last Caught`)
+        .setDescription('No Pokémon caught yet!\nUse `/hunt` or wait for a wild spawn.')],
+      components: [tabRow('last')],
+    };
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(latest.isShiny ? 0xffd700 : 0xff0000)
+    .setTitle(`⭐ Last Caught — ${latest.pokemon.nameDisplay}${latest.isShiny ? ' ✨ SHINY' : ''}`)
+    .addFields(
+      { name: '🎚️ Level',  value: `${latest.level}`,          inline: true },
+      { name: '💫 Rarity', value: latest.pokemon.rarity,       inline: true },
+      { name: '🕐 Caught', value: `<t:${Math.floor(latest.caughtAt.getTime() / 1000)}:R>`, inline: true },
+    )
+    .setTimestamp();
+
+  if (latest.nickname) embed.addFields({ name: '📛 Nickname', value: latest.nickname, inline: true });
+  if (latest.pokemon.artworkUrl) embed.setImage(latest.pokemon.artworkUrl);
+  else if (latest.pokemon.spriteUrl) embed.setThumbnail(latest.pokemon.spriteUrl);
+
+  return { embeds: [embed], components: [tabRow('last')] };
+}
+
+async function buildCollection(
   client: BotClient,
   userId: string,
   username: string,
@@ -110,13 +143,13 @@ async function showRecentCatches(
   const total = await client.prisma.userPokemon.count({ where: { userId } });
 
   if (total === 0) {
-    await interaction.editReply({
+    return {
       embeds: [new EmbedBuilder()
         .setColor(0x888888)
-        .setTitle(`📖 ${username}'s Pokédex`)
-        .setDescription('No Pokémon caught yet! Use `/hunt`, `/catch`, or wait for a wild spawn.')],
-    });
-    return;
+        .setTitle(`📋 ${username}'s Collection`)
+        .setDescription('No Pokémon caught yet!\nUse `/hunt` or wait for a wild spawn.')],
+      components: [tabRow('collection')],
+    };
   }
 
   const caught = await client.prisma.userPokemon.findMany({
@@ -138,101 +171,74 @@ async function showRecentCatches(
 
   const embed = new EmbedBuilder()
     .setColor(0xff0000)
-    .setTitle(`📖 ${username}'s Recent Catches`)
+    .setTitle(`📋 ${username}'s Collection`)
     .setDescription(lines.join('\n'))
     .setFooter({ text: `Page ${page + 1}/${totalPages} • ${total} total caught` })
     .setTimestamp();
 
-  if (featured?.pokemon.artworkUrl) {
-    embed.setImage(featured.pokemon.artworkUrl);
-  } else if (featured?.pokemon.spriteUrl) {
-    embed.setThumbnail(featured.pokemon.spriteUrl);
-  }
+  if (featured?.pokemon.artworkUrl) embed.setImage(featured.pokemon.artworkUrl);
+  else if (featured?.pokemon.spriteUrl) embed.setThumbnail(featured.pokemon.spriteUrl);
 
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`pokedex_prev:${userId}:${page}`)
-      .setLabel('◀ Prev')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(page === 0),
-    new ButtonBuilder()
-      .setCustomId(`pokedex_page:${userId}:${page}`)
-      .setLabel(`${page + 1} / ${totalPages}`)
-      .setStyle(ButtonStyle.Primary)
-      .setDisabled(true),
-    new ButtonBuilder()
-      .setCustomId(`pokedex_next:${userId}:${page}`)
-      .setLabel('Next ▶')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(page >= totalPages - 1),
-  );
+  const components: ActionRowBuilder<ButtonBuilder>[] = [tabRow('collection', page)];
+  if (totalPages > 1) components.push(pageRow(page, totalPages));
 
-  const reply = await interaction.editReply({ embeds: [embed], components: [row] });
-
-  const collector = reply.createMessageComponentCollector({
-    componentType: ComponentType.Button,
-    time: 120_000,
-    filter: (btn) => btn.user.id === interaction.user.id,
-  });
-
-  collector.on('collect', async (btn) => {
-    await btn.deferUpdate();
-    const parts = btn.customId.split(':');
-    const currentPage = parseInt(parts[2], 10);
-    const newPage = btn.customId.startsWith('pokedex_prev') ? currentPage - 1 : currentPage + 1;
-
-    const newCaught = await client.prisma.userPokemon.findMany({
-      where: { userId },
-      include: { pokemon: true },
-      orderBy: { caughtAt: 'desc' },
-      skip: newPage * PAGE_SIZE,
-      take: PAGE_SIZE,
-    });
-
-    const newFeatured = newCaught[0];
-    const newLines = newCaught.map((up, i) => {
-      const shinyTag = up.isShiny ? ' ✨' : '';
-      const nickTag = up.nickname ? ` "${up.nickname}"` : '';
-      return `**${newPage * PAGE_SIZE + i + 1}.** ${up.pokemon.nameDisplay}${shinyTag}${nickTag} — Lv.${up.level} • ${up.pokemon.rarity}`;
-    });
-
-    const newEmbed = new EmbedBuilder()
-      .setColor(0xff0000)
-      .setTitle(`📖 ${username}'s Recent Catches`)
-      .setDescription(newLines.join('\n'))
-      .setFooter({ text: `Page ${newPage + 1}/${totalPages} • ${total} total caught` })
-      .setTimestamp();
-
-    if (newFeatured?.pokemon.artworkUrl) {
-      newEmbed.setImage(newFeatured.pokemon.artworkUrl);
-    } else if (newFeatured?.pokemon.spriteUrl) {
-      newEmbed.setThumbnail(newFeatured.pokemon.spriteUrl);
-    }
-
-    const newRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`pokedex_prev:${userId}:${newPage}`)
-        .setLabel('◀ Prev')
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(newPage === 0),
-      new ButtonBuilder()
-        .setCustomId(`pokedex_page:${userId}:${newPage}`)
-        .setLabel(`${newPage + 1} / ${totalPages}`)
-        .setStyle(ButtonStyle.Primary)
-        .setDisabled(true),
-      new ButtonBuilder()
-        .setCustomId(`pokedex_next:${userId}:${newPage}`)
-        .setLabel('Next ▶')
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(newPage >= totalPages - 1),
-    );
-
-    await interaction.editReply({ embeds: [newEmbed], components: [newRow] });
-  });
-
-  collector.on('end', () => {
-    interaction.editReply({ components: [] }).catch(() => {});
-  });
+  return { embeds: [embed], components };
 }
+
+// ── Command ───────────────────────────────────────────────────────────────────
+
+const command: Command = {
+  data: new SlashCommandBuilder()
+    .setName('pokedex')
+    .setDescription("Browse your Pokédex — use the tab buttons to switch views")
+    .addUserOption((o) => o.setName('user').setDescription("View another trainer's Pokédex")),
+
+  async execute(interaction: ChatInputCommandInteraction, client: BotClient) {
+    await interaction.deferReply();
+    const target = interaction.options.getUser('user') ?? interaction.user;
+    const avatarUrl = target.displayAvatarURL();
+
+    const initial = await buildSummary(client, target.id, target.username, avatarUrl);
+    const reply = await interaction.editReply(initial);
+
+    const collector = reply.createMessageComponentCollector({
+      filter: (i) => i.user.id === interaction.user.id,
+      time: 120_000,
+    });
+
+    collector.on('collect', async (btn) => {
+      await btn.deferUpdate();
+      const [, action, param] = btn.customId.split(':');
+
+      if (action === 'summary') {
+        const view = await buildSummary(client, target.id, target.username, avatarUrl);
+        await interaction.editReply(view);
+
+      } else if (action === 'last') {
+        const view = await buildLastCaught(client, target.id, target.username);
+        await interaction.editReply(view);
+
+      } else if (action === 'collection') {
+        const page = parseInt(param ?? '0', 10);
+        const view = await buildCollection(client, target.id, target.username, page);
+        await interaction.editReply(view);
+
+      } else if (action === 'prev') {
+        const page = Math.max(0, parseInt(param, 10) - 1);
+        const view = await buildCollection(client, target.id, target.username, page);
+        await interaction.editReply(view);
+
+      } else if (action === 'next') {
+        const page = parseInt(param, 10) + 1;
+        const view = await buildCollection(client, target.id, target.username, page);
+        await interaction.editReply(view);
+      }
+    });
+
+    collector.on('end', () => {
+      interaction.editReply({ components: [] }).catch(() => {});
+    });
+  },
+};
 
 export default command;

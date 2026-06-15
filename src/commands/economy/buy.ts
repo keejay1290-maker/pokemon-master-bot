@@ -34,13 +34,24 @@ function normalizeItemName(str: string): string {
 const command: Command = {
   data: new SlashCommandBuilder()
     .setName('buy')
-    .setDescription('Buy an item from the PokéShop')
+    .setDescription('Quick-buy an item by name — or use /shop for the full interactive store')
     .addStringOption((o) =>
-      o.setName('item').setDescription('Name of the item to buy (e.g. Ultra Ball, Pickaxe)').setRequired(true)
+      o.setName('item').setDescription('Item name (use autocomplete)').setRequired(true).setAutocomplete(true)
     )
     .addIntegerOption((o) =>
       o.setName('quantity').setDescription('How many to buy (default 1)').setMinValue(1).setMaxValue(99)
     ),
+
+  async autocomplete(interaction, client) {
+    const focused = interaction.options.getFocused().toLowerCase();
+    const matches = SHOP_ITEMS
+      .filter((i) => i.name.toLowerCase().includes(focused) || i.id.includes(focused.replace(/\s/g, '_')))
+      .slice(0, 25);
+    await interaction.respond(matches.map((i) => ({
+      name: `${i.emoji} ${i.name} — ${i.price.toLocaleString()} coins`,
+      value: i.id,
+    })));
+  },
 
   async execute(interaction: ChatInputCommandInteraction, client: BotClient) {
     const itemInput = interaction.options.getString('item', true);
@@ -48,6 +59,7 @@ const command: Command = {
 
     const item = SHOP_ITEMS.find(
       (i) =>
+        i.id === itemInput ||
         normalizeItemName(i.name) === normalizeItemName(itemInput) ||
         i.id === itemInput.toLowerCase().replace(/\s/g, '_')
     );
