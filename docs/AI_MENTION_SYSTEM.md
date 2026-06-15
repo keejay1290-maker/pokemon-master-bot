@@ -68,7 +68,9 @@ Discord message → messageCreate event
 
 ---
 
-## Bug Fixed (2026-06-15)
+## Bug History
+
+### Fix 1 — Silent Failure (commit 1feb448, 2026-06-15)
 
 **Root cause**: `handleMentionAI` called `client.redis.get()` without a `.catch()`. When Redis is unavailable (optional — the bot runs without it), this throws `ClientClosedError`. The outer `.catch(() => {})` in the caller swallowed the error silently — the bot appeared to not respond at all.
 
@@ -77,6 +79,42 @@ Discord message → messageCreate event
 2. `client.redis.set(...)` wrapped in `.catch(() => {})` — cooldown persistence is best-effort.
 3. Outer `.catch(() => {})` → `.catch((err) => client.logger?.error(...))` — errors now appear in logs.
 4. `askProfessor()` `.catch()` now logs the error before returning null.
+
+**Result after this fix**: Symptom changed from silent failure to visible failure — user sees "My research terminal seems to be offline right now." This means `askProfessor()` itself is still throwing.
+
+---
+
+### Investigation — @mention shows "research terminal offline" (S14, 2026-06-15)
+
+**Execution path**:
+```
+message @grimbot → handleMentionAI() → askProfessor()
+  → getGroq() — creates Groq SDK client with GROQ_API_KEY
+  → groq.chat.completions.create(model='llama-3.3-70b-versatile', ...)
+  → throws exception
+  → caught by .catch() in messageCreate.ts → answer = null
+  → "My research terminal seems to be offline right now."
+```
+
+**Root cause candidates** (in order of likelihood):
+1. `GROQ_API_KEY` not set in Railway env vars → Groq SDK throws "GROQ_API_KEY is not set in environment variables" at `getGroq()` call
+2. `GROQ_API_KEY` invalid or expired → Groq API returns HTTP 401
+3. Model `llama-3.3-70b-versatile` unavailable → HTTP 404 or 400
+4. Rate limit → HTTP 429
+
+**Fix applied (commit 674d971)**:
+- `groqService.ts`: logs `GROQ_API_KEY` presence (boolean + key length, never value) at module load
+- `groqService.ts`: throws `Error('GROQ_API_KEY is not set in environment variables')` early if key is missing
+- `groqService.ts`: wraps API call in try/catch logging `err.name`, `err.status`, `err.message`
+- `messageCreate.ts`: adds `console.error` to the catch block so error is guaranteed to appear in Railway logs
+
+**How to diagnose after deploy**: Search Railway logs for `[Groq]`. You will see one of:
+- `[Groq] module loaded — GROQ_API_KEY present=false` → add `GROQ_API_KEY` to Railway env vars
+- `[Groq] API error — status=401` → API key is invalid, rotate it at console.groq.com
+- `[Groq] API error — status=404` or model error → change `GROQ_MODEL` env var to `llama-3.1-8b-instant`
+- `[Groq] response received — contentLen=N` → API is working (not expected given the symptom)
+
+**Action required**: Check Railway logs after next `@grimbot` ping. The `[Groq]` lines will identify the exact failure.
 
 ---
 
