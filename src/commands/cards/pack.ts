@@ -40,7 +40,12 @@ const command: Command = {
     const filtered = (sets as Array<{ id: string; name: string }>)
       .filter((s) => s.name.toLowerCase().includes(focused))
       .slice(0, 25);
-    await interaction.respond(filtered.map((s) => ({ name: s.name, value: s.id })));
+    await interaction.respond(filtered.map((s) => {
+      const tier = getPackTier(s.id);
+      const cost = getPackCost(s.id);
+      const label = `${s.name} · Tier ${tier} · ${cost.toLocaleString()} coins`;
+      return { name: label.slice(0, 100), value: s.id };
+    }));
   },
 
   async execute(interaction: ChatInputCommandInteraction, client: BotClient) {
@@ -203,10 +208,14 @@ async function handleOpen(interaction: ChatInputCommandInteraction, client: BotC
       time: 30_000,
     }) as StringSelectMenuInteraction;
 
+    // Acknowledge the select-menu interaction immediately — Discord gives 3s before it expires.
+    // All remaining async work (DB, TCG API, Redis) runs after this defer.
+    await selection.deferUpdate();
+
     const chosenItemId = selection.values[0];
     const chosenPack = packs.find((p) => p.itemId === chosenItemId);
     if (!chosenPack) {
-      await selection.update({ content: '❌ Pack not found.', embeds: [], components: [] });
+      await interaction.editReply({ content: '❌ Pack not found.', embeds: [], components: [] });
       return;
     }
 
@@ -230,10 +239,10 @@ async function handleOpen(interaction: ChatInputCommandInteraction, client: BotC
       });
     } catch (e: any) {
       if (e.message === 'NO_PACK') {
-        await selection.update({ content: '❌ Pack no longer in inventory.', embeds: [], components: [] });
+        await interaction.editReply({ content: '❌ Pack no longer in inventory.', embeds: [], components: [] });
       } else {
         console.error(e);
-        await selection.update({ content: '❌ An error occurred.', embeds: [], components: [] });
+        await interaction.editReply({ content: '❌ An error occurred.', embeds: [], components: [] });
       }
       return;
     }
@@ -247,7 +256,7 @@ async function handleOpen(interaction: ChatInputCommandInteraction, client: BotC
         update: { quantity: { increment: 1 } },
         create: { userId: interaction.user.id, itemId: chosenItemId, itemName: chosenPack.itemName, quantity: 1 },
       });
-      await selection.update({ content: '❌ Could not fetch cards from TCG API. Your pack has been refunded.', embeds: [], components: [] });
+      await interaction.editReply({ content: '❌ Could not fetch cards from TCG API. Your pack has been refunded.', embeds: [], components: [] });
       return;
     }
 
@@ -306,11 +315,11 @@ async function handleOpen(interaction: ChatInputCommandInteraction, client: BotC
       const msg = e.message === 'REDIS_UNAVAILABLE'
         ? '❌ Pack reveal is temporarily unavailable (cache offline). Your pack has been refunded — try again in a moment.'
         : '❌ Failed to start pack session. Your pack has been refunded.';
-      await selection.update({ content: msg, embeds: [], components: [] });
+      await interaction.editReply({ content: msg, embeds: [], components: [] });
       return;
     }
 
-    await selection.update({ embeds: [sessionResult.embed], components: [sessionResult.row] });
+    await interaction.editReply({ embeds: [sessionResult.embed], components: [sessionResult.row] });
 
     // Fire-and-forget quest/achievement tracking for opening a pack
     incrementQuestProgress(client.prisma, interaction.user.id, 'open_pack', 1).catch(() => {});
