@@ -31,20 +31,19 @@ export async function handleMessageCreate(message: Message, client: BotClient) {
 
   // Bot mention → Professor Oak AI
   if (client.user && message.mentions.has(client.user)) {
-    await handleMentionAI(message, client).catch(() => {});
+    await handleMentionAI(message, client).catch((err) => {
+      client.logger?.error('handleMentionAI uncaught error:', err);
+    });
   }
 }
 
 async function handleMentionAI(message: Message, client: BotClient) {
-  // Per-user cooldown
+  // Per-user cooldown. Redis may be unavailable — catch so mention still works.
   const coolKey = `mention:cd:${message.author.id}`;
-  const onCooldown = await client.redis.get(coolKey);
-  if (onCooldown) {
-    // Silently ignore — don't spam the channel with cooldown messages
-    return;
-  }
+  const onCooldown = await client.redis.get(coolKey).catch(() => null);
+  if (onCooldown) return;
 
-  // Strip the mention from the message content
+  // Strip all mentions from the message content
   const question = message.content
     .replace(/<@!?\d+>/g, '')
     .trim();
@@ -63,10 +62,13 @@ async function handleMentionAI(message: Message, client: BotClient) {
     await (message.channel as any).sendTyping().catch(() => {});
   }
 
-  const answer = await askProfessor(question).catch(() => null);
+  const answer = await askProfessor(question).catch((err) => {
+    client.logger?.error('Mention AI Groq error:', err);
+    return null;
+  });
 
   if (!answer) {
-    await message.reply({ content: "My research terminal seems to be offline right now. Try again in a moment!" });
+    await message.reply({ content: 'My research terminal seems to be offline right now. Try again in a moment!' });
     return;
   }
 
@@ -78,6 +80,6 @@ async function handleMentionAI(message: Message, client: BotClient) {
       .setFooter({ text: 'Ask me anything about Pokémon!' })],
   });
 
-  // Set cooldown after successful response
-  await client.redis.set(coolKey, '1', { EX: MENTION_COOLDOWN });
+  // Best-effort cooldown set — Redis unavailability should not block the response
+  await client.redis.set(coolKey, '1', { EX: MENTION_COOLDOWN }).catch(() => {});
 }

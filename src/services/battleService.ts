@@ -5,6 +5,86 @@ import { addXp } from './userService.js';
 import { checkAndAwardAchievements } from './achievementService.js';
 import { incrementQuestProgress } from './questService.js';
 
+// Lookup table for common moves. Battle uses this to get real power + category.
+// Unknown moves default to Normal/Physical/50.
+export const MOVE_TABLE: Record<string, Omit<MoveData, 'name'>> = {
+  tackle:       { type: 'normal',   category: 'Physical', power: 40,  accuracy: 100, pp: 35 },
+  scratch:      { type: 'normal',   category: 'Physical', power: 40,  accuracy: 100, pp: 35 },
+  pound:        { type: 'normal',   category: 'Physical', power: 40,  accuracy: 100, pp: 35 },
+  growl:        { type: 'normal',   category: 'Status',   power: 0,   accuracy: 100, pp: 40 },
+  leer:         { type: 'normal',   category: 'Status',   power: 0,   accuracy: 100, pp: 30 },
+  tail_whip:    { type: 'normal',   category: 'Status',   power: 0,   accuracy: 100, pp: 30 },
+  'tail whip':  { type: 'normal',   category: 'Status',   power: 0,   accuracy: 100, pp: 30 },
+  quick_attack: { type: 'normal',   category: 'Physical', power: 40,  accuracy: 100, pp: 30, priority: 1 },
+  'quick attack': { type: 'normal', category: 'Physical', power: 40,  accuracy: 100, pp: 30, priority: 1 },
+  headbutt:     { type: 'normal',   category: 'Physical', power: 70,  accuracy: 100, pp: 15 },
+  'body slam':  { type: 'normal',   category: 'Physical', power: 85,  accuracy: 100, pp: 15 },
+  body_slam:    { type: 'normal',   category: 'Physical', power: 85,  accuracy: 100, pp: 15 },
+  swift:        { type: 'normal',   category: 'Special',  power: 60,  accuracy: 100, pp: 20 },
+  'hyper beam': { type: 'normal',   category: 'Special',  power: 150, accuracy: 90,  pp: 5  },
+  hyper_beam:   { type: 'normal',   category: 'Special',  power: 150, accuracy: 90,  pp: 5  },
+  // Fire
+  ember:        { type: 'fire',     category: 'Special',  power: 40,  accuracy: 100, pp: 25 },
+  flamethrower: { type: 'fire',     category: 'Special',  power: 90,  accuracy: 100, pp: 15 },
+  'fire blast': { type: 'fire',     category: 'Special',  power: 110, accuracy: 85,  pp: 5  },
+  fire_blast:   { type: 'fire',     category: 'Special',  power: 110, accuracy: 85,  pp: 5  },
+  'fire spin':  { type: 'fire',     category: 'Special',  power: 35,  accuracy: 85,  pp: 15 },
+  // Water
+  'water gun':  { type: 'water',    category: 'Special',  power: 40,  accuracy: 100, pp: 25 },
+  water_gun:    { type: 'water',    category: 'Special',  power: 40,  accuracy: 100, pp: 25 },
+  surf:         { type: 'water',    category: 'Special',  power: 90,  accuracy: 100, pp: 15 },
+  'water pulse':{ type: 'water',    category: 'Special',  power: 60,  accuracy: 100, pp: 20 },
+  // Grass
+  'vine whip':  { type: 'grass',    category: 'Physical', power: 45,  accuracy: 100, pp: 25 },
+  vine_whip:    { type: 'grass',    category: 'Physical', power: 45,  accuracy: 100, pp: 25 },
+  'razor leaf': { type: 'grass',    category: 'Physical', power: 55,  accuracy: 95,  pp: 25 },
+  razor_leaf:   { type: 'grass',    category: 'Physical', power: 55,  accuracy: 95,  pp: 25 },
+  'solar beam': { type: 'grass',    category: 'Special',  power: 120, accuracy: 100, pp: 10 },
+  solar_beam:   { type: 'grass',    category: 'Special',  power: 120, accuracy: 100, pp: 10 },
+  // Electric
+  'thunder shock': { type: 'electric', category: 'Special', power: 40, accuracy: 100, pp: 30 },
+  thundershock: { type: 'electric', category: 'Special',  power: 40,  accuracy: 100, pp: 30 },
+  thunderbolt:  { type: 'electric', category: 'Special',  power: 90,  accuracy: 100, pp: 15 },
+  thunder:      { type: 'electric', category: 'Special',  power: 110, accuracy: 70,  pp: 10 },
+  // Psychic
+  psychic:      { type: 'psychic',  category: 'Special',  power: 90,  accuracy: 100, pp: 10 },
+  confusion:    { type: 'psychic',  category: 'Special',  power: 50,  accuracy: 100, pp: 25 },
+  // Ice
+  'ice beam':   { type: 'ice',      category: 'Special',  power: 90,  accuracy: 100, pp: 10 },
+  ice_beam:     { type: 'ice',      category: 'Special',  power: 90,  accuracy: 100, pp: 10 },
+  blizzard:     { type: 'ice',      category: 'Special',  power: 110, accuracy: 70,  pp: 5  },
+  // Rock / Ground
+  earthquake:   { type: 'ground',   category: 'Physical', power: 100, accuracy: 100, pp: 10 },
+  'rock slide': { type: 'rock',     category: 'Physical', power: 75,  accuracy: 90,  pp: 10 },
+  rock_slide:   { type: 'rock',     category: 'Physical', power: 75,  accuracy: 90,  pp: 10 },
+  // Ghost / Dark
+  'shadow ball':{ type: 'ghost',    category: 'Special',  power: 80,  accuracy: 100, pp: 15 },
+  shadow_ball:  { type: 'ghost',    category: 'Special',  power: 80,  accuracy: 100, pp: 15 },
+  bite:         { type: 'dark',     category: 'Physical', power: 60,  accuracy: 100, pp: 25 },
+  crunch:       { type: 'dark',     category: 'Physical', power: 80,  accuracy: 100, pp: 15 },
+  // Dragon / Steel
+  'dragon claw':{ type: 'dragon',   category: 'Physical', power: 80,  accuracy: 100, pp: 15 },
+  dragon_claw:  { type: 'dragon',   category: 'Physical', power: 80,  accuracy: 100, pp: 15 },
+  'iron tail':  { type: 'steel',    category: 'Physical', power: 100, accuracy: 75,  pp: 15 },
+  iron_tail:    { type: 'steel',    category: 'Physical', power: 100, accuracy: 75,  pp: 15 },
+  // Fighting / Poison / Flying / Bug / Fairy
+  'karate chop':{ type: 'fighting', category: 'Physical', power: 50,  accuracy: 100, pp: 25 },
+  'cross chop': { type: 'fighting', category: 'Physical', power: 100, accuracy: 80,  pp: 5  },
+  'poison sting':{ type: 'poison',  category: 'Physical', power: 15,  accuracy: 100, pp: 35 },
+  'gust':       { type: 'flying',   category: 'Special',  power: 40,  accuracy: 100, pp: 35 },
+  'wing attack':{ type: 'flying',   category: 'Physical', power: 60,  accuracy: 100, pp: 35 },
+  'bug bite':   { type: 'bug',      category: 'Physical', power: 60,  accuracy: 100, pp: 20 },
+  'moon blast': { type: 'fairy',    category: 'Special',  power: 95,  accuracy: 100, pp: 15 },
+};
+
+export function getMoveData(moveName: string): MoveData {
+  const key = moveName.toLowerCase().replace(/_/g, ' ');
+  const entry = MOVE_TABLE[key] ?? MOVE_TABLE[moveName.toLowerCase()];
+  if (entry) return { name: moveName, ...entry };
+  // Unknown move: treat as Normal Physical 50
+  return { name: moveName, type: 'normal', category: 'Physical', power: 50, accuracy: 100, pp: 20 };
+}
+
 export async function loadBattleTeam(
   prisma: PrismaClient,
   userId: string
@@ -25,8 +105,40 @@ export async function loadBattleTeam(
     teamPokemon.push(firstPokemon);
   }
 
+  // Batch-fetch move data from DB for all Pokémon in the team
+  const allPokemonIds = teamPokemon.map((up) => up.pokemon.id);
+  const dbMoves = await prisma.pokemonMove.findMany({
+    where: { pokemonId: { in: allPokemonIds } },
+  });
+  // Index by pokemonId → moveName for O(1) lookups
+  const dbMoveIndex: Record<string, Record<string, typeof dbMoves[0]>> = {};
+  for (const m of dbMoves) {
+    if (!dbMoveIndex[m.pokemonId]) dbMoveIndex[m.pokemonId] = {};
+    dbMoveIndex[m.pokemonId][m.moveName.toLowerCase()] = m;
+  }
+
   return teamPokemon.map((up) => {
     const stats = calcPokemonStats(up.pokemon, up);
+    const types = [up.pokemon.type1, up.pokemon.type2].filter(Boolean) as string[];
+    const moveNames = up.moves.length > 0 ? up.moves : ['tackle', 'growl', 'scratch', 'ember'];
+    const pokemonMoves = dbMoveIndex[up.pokemon.id] ?? {};
+
+    const moveData: MoveData[] = moveNames.map((name) => {
+      const dbEntry = pokemonMoves[name.toLowerCase()];
+      if (dbEntry) {
+        return {
+          name: dbEntry.moveName,
+          type: dbEntry.moveType,
+          category: dbEntry.category as MoveData['category'],
+          power: dbEntry.power ?? 0,
+          accuracy: dbEntry.accuracy ?? 100,
+          pp: dbEntry.pp,
+        };
+      }
+      // Fall back to static table for default / unknown moves
+      return getMoveData(name);
+    });
+
     return {
       userPokemonId: up.id,
       pokemonId: up.pokemon.id,
@@ -34,7 +146,9 @@ export async function loadBattleTeam(
       level: up.level,
       isShiny: up.isShiny,
       nature: up.nature,
-      moves: up.moves.length > 0 ? up.moves : ['tackle', 'growl', 'scratch', 'ember'],
+      types,
+      moves: moveNames,
+      moveData,
       heldItem: up.heldItem ?? undefined,
       maxHp: stats.hp,
       currentHp: stats.hp,
@@ -66,16 +180,16 @@ export function calcDamage(
   const levelFactor = (2 * attacker.level) / 5 + 2;
   const baseDmg = Math.floor((levelFactor * move.power * atk) / def / 50) + 2;
 
-  // Random factor
+  // Random factor (85–100%)
   const random = (Math.floor(Math.random() * 16) + 85) / 100;
 
-  // STAB (placeholder — attacker type check would need pokemon data)
-  const stab = 1.0;
+  // STAB: 1.5x if move type matches one of the attacker's types
+  const stab = attacker.types.includes(move.type.toLowerCase()) ? 1.5 : 1.0;
 
-  // Type effectiveness — simplified (single type check)
-  const effectiveness = 1.0; // Would need defender's actual type
+  // Type effectiveness against both of defender's types
+  const effectiveness = getTypeEffectiveness(move.type, defender.types[0] ?? 'normal', defender.types[1]);
 
-  // Crit
+  // Crit (6.25% chance — Gen 3+ base rate)
   const isCrit = Math.random() < 0.0625;
   const critMod = isCrit ? 1.5 : 1;
 

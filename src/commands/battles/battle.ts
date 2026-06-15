@@ -3,7 +3,8 @@ import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType,
 } from 'discord.js';
 import type { BotClient, Command, BattleState } from '../../types/index.js';
-import { loadBattleTeam, calcDamage, applyStatusDamage, checkFainted, saveBattleResult } from '../../services/battleService.js';
+import { loadBattleTeam, calcDamage, getMoveData, applyStatusDamage, checkFainted, saveBattleResult } from '../../services/battleService.js';
+import { getEffectivenessText } from '../../utils/pokemon.js';
 import { progressBar } from '../../utils/embeds.js';
 
 const command: Command = {
@@ -188,13 +189,17 @@ const command: Command = {
 
           const moveIndex = parseInt(moveBtn.customId.replace('move_', ''));
           const moveName = attacker.moves[moveIndex] ?? 'tackle';
+          // Use DB-loaded move data (populated in loadBattleTeam); fall back to static table
+          const moveInfo = attacker.moveData?.[moveIndex] ?? getMoveData(moveName);
 
-          // Simple damage calculation
-          const basePower = 40 + Math.floor(Math.random() * 60);
-          const damage = Math.max(1, Math.floor(attacker.attack * basePower / (50 * (defender.defense || 1))));
+          const { damage, effectiveness, isCrit } = calcDamage(attacker, defender, moveInfo, currentState.weather);
           defender.currentHp = Math.max(0, defender.currentHp - damage);
 
-          currentState.battleLog.push(`${attacker.name} used ${moveName}! Dealt ${damage} damage.`);
+          const effText = getEffectivenessText(effectiveness);
+          const critText = isCrit ? ' Critical hit!' : '';
+          currentState.battleLog.push(
+            `${attacker.name} used **${moveName}**! (${moveInfo.power > 0 ? `${damage} dmg` : 'no damage'})${critText}${effText ? ' ' + effText : ''}`
+          );
           currentState.turn++;
           currentState.currentTurnUserId = isChallenger ? currentState.opponentId : currentState.challengerId;
 

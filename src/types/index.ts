@@ -68,7 +68,9 @@ export interface BattlePokemon {
   level: number;
   isShiny: boolean;
   nature: string;
+  types: string[];
   moves: string[];
+  moveData: MoveData[];
   heldItem?: string;
   // Calculated stats
   maxHp: number;
