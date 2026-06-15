@@ -1,9 +1,16 @@
 import Groq from 'groq-sdk';
 
+// Diagnostic: log API key state at module load (never logs the key value)
+const _apiKeyLen = process.env.GROQ_API_KEY?.length ?? 0;
+console.log(`[Groq] module loaded — GROQ_API_KEY present=${_apiKeyLen > 0} len=${_apiKeyLen}`);
+
 let groqClient: Groq | null = null;
 
 function getGroq(): Groq {
   if (!groqClient) {
+    if (!process.env.GROQ_API_KEY) {
+      throw new Error('GROQ_API_KEY is not set in environment variables');
+    }
     groqClient = new Groq({ apiKey: process.env.GROQ_API_KEY });
   }
   return groqClient;
@@ -58,17 +65,26 @@ export async function askProfessor(question: string, model?: string): Promise<st
   const groq = getGroq();
   const modelToUse = model ?? process.env.GROQ_MODEL ?? GROQ_MODELS[0].id;
 
-  const response = await groq.chat.completions.create({
-    model: modelToUse,
-    messages: [
-      { role: 'system', content: PROFESSOR_OAK_SYSTEM_PROMPT },
-      { role: 'user', content: question },
-    ],
-    max_tokens: 600,
-    temperature: 0.7,
-  });
+  console.log(`[Groq] askProfessor — model=${modelToUse} questionLen=${question.length}`);
 
-  return response.choices[0]?.message?.content ?? 'The research terminal appears to be offline. Please try again shortly!';
+  try {
+    const response = await groq.chat.completions.create({
+      model: modelToUse,
+      messages: [
+        { role: 'system', content: PROFESSOR_OAK_SYSTEM_PROMPT },
+        { role: 'user', content: question },
+      ],
+      max_tokens: 600,
+      temperature: 0.7,
+    });
+
+    const content = response.choices[0]?.message?.content;
+    console.log(`[Groq] response received — contentLen=${content?.length ?? 0}`);
+    return content ?? 'The research terminal appears to be offline. Please try again shortly!';
+  } catch (err: any) {
+    console.error(`[Groq] API error — name=${err?.name} status=${err?.status ?? 'none'} message=${err?.message}`);
+    throw err;
+  }
 }
 
 export const GROQ_MODELS: { id: string; label: string }[] = [

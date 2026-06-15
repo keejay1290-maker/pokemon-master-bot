@@ -62,7 +62,9 @@ async function handleMentionAI(message: Message, client: BotClient) {
     await (message.channel as any).sendTyping().catch(() => {});
   }
 
-  const answer = await askProfessor(question).catch((err) => {
+  const answer = await askProfessor(question).catch((err: any) => {
+    const msg = err?.message ?? String(err);
+    console.error(`[Groq] handleMentionAI error: ${msg}`);
     client.logger?.error('Mention AI Groq error:', err);
     return null;
   });
