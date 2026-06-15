@@ -59,6 +59,7 @@ export interface BattleState {
   messageId?: string;
   channelId: string;
   timeout?: NodeJS.Timeout;
+  roundLeaderId?: string;  // trainer whose active Pokémon is faster this round
 }
 
 export interface BattlePokemon {

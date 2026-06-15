@@ -3,6 +3,9 @@ import type { BotClient } from '../types/index.js';
 import { formatNumber } from '../utils/embeds.js';
 import { calculateMarketValue } from '../services/cardValueService.js';
 
+// Generic card-back image used when a TCG API card has no artwork (Base Set era, promos, some SV trainers)
+const CARD_BACK_PLACEHOLDER_URL = 'https://images.pokemontcg.io/cardback.png';
+
 export interface PackSession {
   userId: string;
   setName: string;
@@ -107,6 +110,7 @@ function buildRevealEmbed(session: PackSession, card: ResolvedCard, cardNum: num
 
   if (card.imageLarge) embed.setImage(card.imageLarge);
   else if (card.imageSmall) embed.setThumbnail(card.imageSmall);
+  else embed.setThumbnail(CARD_BACK_PLACEHOLDER_URL);
 
   embed.setTimestamp();
   return embed;

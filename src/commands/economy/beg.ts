@@ -12,7 +12,7 @@ const RESPONSES = [
   { msg: 'Nurse Joy felt sorry for you.',                      min: 100, max: 300 },
   { msg: 'The Gym Leader ignored you...',                      min: 0,   max: 0   },
   { msg: 'A wealthy Collector donated PokéCoins!',             min: 200, max: 500 },
-  { msg: 'Professor Oak slipped you some grant money.',        min: 150, max: 400 },
+  { msg: 'Professor Grim tossed you some research grant money.',        min: 150, max: 400 },
   { msg: 'A passing trainer gave you their spare change.',     min: 75,  max: 200 },
   { msg: 'You tripped over a hidden cache of PokéCoins!',     min: 300, max: 700 },
 ];

@@ -3,7 +3,7 @@ import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType,
 } from 'discord.js';
 import type { BotClient, Command, BattleState } from '../../types/index.js';
-import { loadBattleTeam, calcDamage, getMoveData, applyStatusDamage, checkFainted, saveBattleResult } from '../../services/battleService.js';
+import { loadBattleTeam, calcDamage, getMoveData, applyStatusDamage, checkFainted, saveBattleResult, checkAccuracy, checkStatusBlock, tryInflictStatus, statusLabel } from '../../services/battleService.js';
 import { getEffectivenessText } from '../../utils/pokemon.js';
 import { progressBar } from '../../utils/embeds.js';
 
@@ -111,6 +111,11 @@ const command: Command = {
         },
       });
 
+      // Speed-based first turn: faster active Pokémon's trainer goes first
+      const chSpeed = challengerTeam[0]?.speed ?? 0;
+      const opSpeed = opponentTeam[0]?.speed ?? 0;
+      const firstTurnId = chSpeed >= opSpeed ? interaction.user.id : opponent.id;
+
       const state: BattleState = {
         id: battleRecord.id,
         challengerId: interaction.user.id,
@@ -119,7 +124,8 @@ const command: Command = {
         type,
         status: 'active',
         turn: 1,
-        currentTurnUserId: Math.random() < 0.5 ? interaction.user.id : opponent.id,
+        currentTurnUserId: firstTurnId,
+        roundLeaderId: firstTurnId,
         challengerTeam,
         opponentTeam,
         challengerActivePokemonIndex: 0,
@@ -187,24 +193,89 @@ const command: Command = {
 
           if (!attacker || !defender) return;
 
+          const challengerName = isChallenger ? moveBtn.user.username : opponent.username;
+          const opponentName = isChallenger ? opponent.username : moveBtn.user.username;
+
+          // 1. Status DoT (burn/poison) before move
+          const dotResult = applyStatusDamage(attacker);
+          if (dotResult.damage > 0) {
+            attacker.currentHp = Math.max(0, attacker.currentHp - dotResult.damage);
+            currentState.battleLog.push(dotResult.message);
+            if (checkFainted(attacker)) {
+              // Attacker fainted from status before moving — end turn
+              attackerTeam[attackerIdx].currentHp = 0;
+              const allFainted = attackerTeam.every((p) => p.currentHp <= 0);
+              if (allFainted) {
+                currentState.status = 'finished';
+                await client.redis.del([battleKey, myLockKey, opponentLockKey]);
+                moveCollector.stop();
+                const winnerId = isChallenger ? currentState.opponentId : currentState.challengerId;
+                await saveBattleResult(client, currentState, winnerId);
+                const winnerName = winnerId === currentState.challengerId ? challengerName : opponentName;
+                await moveBtn.update({
+                  embeds: [new EmbedBuilder().setColor(0xffd700).setTitle('🏆 Battle Ended!')
+                    .setDescription(`**${winnerName}** wins!\n\n${currentState.battleLog.slice(-5).join('\n')}`)],
+                  components: [],
+                });
+                return;
+              }
+              // Advance to next turn without move
+              currentState.turn++;
+              currentState.currentTurnUserId = advanceTurn(currentState, isChallenger);
+              await client.redis.set(battleKey, serializeBattle(currentState), { EX: REDIS_TTLS.BATTLE });
+              await moveBtn.update({ embeds: [buildBattleEmbed(currentState, challengerName, opponentName)], components: [buildBattleRow(currentState)] });
+              return;
+            }
+          }
+
+          // 2. Status block check (sleep/freeze/paralysis)
+          const blockResult = checkStatusBlock(attacker);
+          if (blockResult.message) currentState.battleLog.push(blockResult.message);
+          if (blockResult.blocked) {
+            currentState.turn++;
+            currentState.currentTurnUserId = advanceTurn(currentState, isChallenger);
+            await client.redis.set(battleKey, serializeBattle(currentState), { EX: REDIS_TTLS.BATTLE });
+            await moveBtn.update({ embeds: [buildBattleEmbed(currentState, challengerName, opponentName)], components: [buildBattleRow(currentState)] });
+            return;
+          }
+
+          // 3. Use the selected move
           const moveIndex = parseInt(moveBtn.customId.replace('move_', ''));
           const moveName = attacker.moves[moveIndex] ?? 'tackle';
-          // Use DB-loaded move data (populated in loadBattleTeam); fall back to static table
           const moveInfo = attacker.moveData?.[moveIndex] ?? getMoveData(moveName);
 
+          // 4. Accuracy check
+          const hits = checkAccuracy(moveInfo.accuracy);
+          if (!hits) {
+            currentState.battleLog.push(`${attacker.name} used **${moveName}**... but it missed!`);
+            currentState.turn++;
+            currentState.currentTurnUserId = advanceTurn(currentState, isChallenger);
+            await client.redis.set(battleKey, serializeBattle(currentState), { EX: REDIS_TTLS.BATTLE });
+            await moveBtn.update({ embeds: [buildBattleEmbed(currentState, challengerName, opponentName)], components: [buildBattleRow(currentState)] });
+            return;
+          }
+
+          // 5. Damage
           const { damage, effectiveness, isCrit } = calcDamage(attacker, defender, moveInfo, currentState.weather);
           defender.currentHp = Math.max(0, defender.currentHp - damage);
 
           const effText = getEffectivenessText(effectiveness);
-          const critText = isCrit ? ' Critical hit!' : '';
+          const critText = isCrit ? ' 💥 Critical hit!' : '';
           currentState.battleLog.push(
             `${attacker.name} used **${moveName}**! (${moveInfo.power > 0 ? `${damage} dmg` : 'no damage'})${critText}${effText ? ' ' + effText : ''}`
           );
-          currentState.turn++;
-          currentState.currentTurnUserId = isChallenger ? currentState.opponentId : currentState.challengerId;
 
-          const challengerName = isChallenger ? moveBtn.user.username : opponent.username;
-          const opponentName = isChallenger ? opponent.username : moveBtn.user.username;
+          // 6. Status infliction from move type (MOVE_TABLE-based)
+          if (moveInfo.power > 0) {
+            const inflicted = tryInflictStatus(moveInfo.type, moveInfo.category, defender);
+            if (inflicted) {
+              defender.statusEffect = inflicted;
+              currentState.battleLog.push(`${defender.name} was ${inflicted === 'paralysis' ? 'paralyzed' : inflicted + 'ed'}!`);
+            }
+          }
+
+          currentState.turn++;
+          currentState.currentTurnUserId = advanceTurn(currentState, isChallenger);
 
           // Check faint
           if (checkFainted(defender)) {
@@ -232,6 +303,8 @@ const command: Command = {
               const nextIdx = defenderTeam.findIndex((p, i) => i > defenderIdx && p.currentHp > 0);
               if (nextIdx !== -1) currentState.challengerActivePokemonIndex = nextIdx;
             }
+            // Recompute round leader after Pokémon swap
+            recomputeRoundLeader(currentState);
           }
 
           await client.redis.set(battleKey, serializeBattle(currentState), { EX: REDIS_TTLS.BATTLE });
@@ -256,23 +329,47 @@ const command: Command = {
   },
 };
 
+/** Returns the next currentTurnUserId after the current player acted. Recomputes round leader at round boundaries. */
+function advanceTurn(state: BattleState, wasChallenger: boolean): string {
+  const actorId = wasChallenger ? state.challengerId : state.opponentId;
+  const otherId = wasChallenger ? state.opponentId : state.challengerId;
+
+  // If the actor was the round leader, the follower goes next
+  if (actorId === state.roundLeaderId) return otherId;
+
+  // Follower just acted → round complete, recompute leader for next round
+  recomputeRoundLeader(state);
+  return state.roundLeaderId ?? actorId;
+}
+
+function recomputeRoundLeader(state: BattleState): void {
+  const chActive = state.challengerTeam[state.challengerActivePokemonIndex];
+  const opActive = state.opponentTeam[state.opponentActivePokemonIndex];
+  state.roundLeaderId = (chActive?.speed ?? 0) >= (opActive?.speed ?? 0)
+    ? state.challengerId
+    : state.opponentId;
+}
+
 function buildBattleEmbed(state: BattleState, challengerName: string, opponentName: string): EmbedBuilder {
   const ch = state.challengerTeam[state.challengerActivePokemonIndex];
   const op = state.opponentTeam[state.opponentActivePokemonIndex];
   const turnName = state.currentTurnUserId === state.challengerId ? challengerName : opponentName;
 
+  const chStatus = statusLabel(ch?.statusEffect);
+  const opStatus = statusLabel(op?.statusEffect);
+
   return new EmbedBuilder()
     .setColor(0xff0000)
     .setTitle('⚔️ Pokemon Battle!')
-    .setDescription(`**Turn ${state.turn}** — ${turnName}'s move\n\n${state.battleLog.slice(-3).join('\n') || 'Battle started!'}`)
+    .setDescription(`**Turn ${state.turn}** — ${turnName}'s move\n\n${state.battleLog.slice(-4).join('\n') || 'Battle started!'}`)
     .addFields(
       {
-        name: `${challengerName}'s ${ch?.name ?? '???'}`,
+        name: `${challengerName}'s ${ch?.name ?? '???'}${chStatus ? ` ${chStatus}` : ''}`,
         value: `HP: \`${progressBar(ch?.currentHp ?? 0, ch?.maxHp ?? 1)}\` ${ch?.currentHp ?? 0}/${ch?.maxHp ?? 0}`,
         inline: true,
       },
       {
-        name: `${opponentName}'s ${op?.name ?? '???'}`,
+        name: `${opponentName}'s ${op?.name ?? '???'}${opStatus ? ` ${opStatus}` : ''}`,
         value: `HP: \`${progressBar(op?.currentHp ?? 0, op?.maxHp ?? 1)}\` ${op?.currentHp ?? 0}/${op?.maxHp ?? 0}`,
         inline: true,
       }

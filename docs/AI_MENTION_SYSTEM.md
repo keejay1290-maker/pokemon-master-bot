@@ -84,37 +84,33 @@ Discord message → messageCreate event
 
 ---
 
-### Investigation — @mention shows "research terminal offline" (S14, 2026-06-15)
+### Fix 2 — Decommissioned model via GROQ_MODEL env var (confirmed S15, 2026-06-15)
 
-**Execution path**:
+**Root cause confirmed** via Railway logs (`railway logs --tail 200`):
+
 ```
-message @grimbot → handleMentionAI() → askProfessor()
-  → getGroq() — creates Groq SDK client with GROQ_API_KEY
-  → groq.chat.completions.create(model='llama-3.3-70b-versatile', ...)
-  → throws exception
-  → caught by .catch() in messageCreate.ts → answer = null
-  → "My research terminal seems to be offline right now."
+[Groq] askProfessor — model=llama-3.1-70b-versatile questionLen=2
+[Groq] API error — name=Error status=400 message=400 {"error":{"message":"The model
+  `llama-3.1-70b-versatile` has been decommissioned and is no longer supported..."
+  "code":"model_decommissioned"}}
 ```
 
-**Root cause candidates** (in order of likelihood):
-1. `GROQ_API_KEY` not set in Railway env vars → Groq SDK throws "GROQ_API_KEY is not set in environment variables" at `getGroq()` call
-2. `GROQ_API_KEY` invalid or expired → Groq API returns HTTP 401
-3. Model `llama-3.3-70b-versatile` unavailable → HTTP 404 or 400
-4. Rate limit → HTTP 429
+The code fix in commit `674d971` updated `GROQ_MODELS[0].id` to `llama-3.3-70b-versatile` as the fallback, but the model selection logic is:
+```typescript
+const modelToUse = model ?? process.env.GROQ_MODEL ?? GROQ_MODELS[0].id;
+```
 
-**Fix applied (commit 674d971)**:
-- `groqService.ts`: logs `GROQ_API_KEY` presence (boolean + key length, never value) at module load
-- `groqService.ts`: throws `Error('GROQ_API_KEY is not set in environment variables')` early if key is missing
-- `groqService.ts`: wraps API call in try/catch logging `err.name`, `err.status`, `err.message`
-- `messageCreate.ts`: adds `console.error` to the catch block so error is guaranteed to appear in Railway logs
+Railway had `GROQ_MODEL=llama-3.1-70b-versatile` — this env var was checked BEFORE the updated fallback constant, overriding the fix entirely. Every API call used the decommissioned model and got HTTP 400.
 
-**How to diagnose after deploy**: Search Railway logs for `[Groq]`. You will see one of:
-- `[Groq] module loaded — GROQ_API_KEY present=false` → add `GROQ_API_KEY` to Railway env vars
-- `[Groq] API error — status=401` → API key is invalid, rotate it at console.groq.com
-- `[Groq] API error — status=404` or model error → change `GROQ_MODEL` env var to `llama-3.1-8b-instant`
-- `[Groq] response received — contentLen=N` → API is working (not expected given the symptom)
+**Fixes applied (S15)**:
+1. **Railway env var**: `GROQ_MODEL` updated to `llama-3.3-70b-versatile` via `railway variables set`
+2. **Local `.env`**: `GROQ_MODEL` updated to `llama-3.3-70b-versatile`
+3. **`groqService.ts` hardening**: `process.env.GROQ_MODEL` is now validated against `GROQ_MODELS` known list before use — if the value is not in the list (e.g. a decommissioned model), it is ignored and the code default `GROQ_MODELS[0].id` is used instead. This prevents the same regression if the env var becomes stale again.
 
-**Action required**: Check Railway logs after next `@grimbot` ping. The `[Groq]` lines will identify the exact failure.
+**`GROQ_MODEL` env var vs code default priority** (after fix):
+- Explicit `model` param → wins
+- `GROQ_MODEL` env var AND it's in `GROQ_MODELS` → used
+- `GROQ_MODEL` not set OR not a known model → falls back to `GROQ_MODELS[0].id` = `llama-3.3-70b-versatile`
 
 ---
 

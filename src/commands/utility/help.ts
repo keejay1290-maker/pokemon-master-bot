@@ -24,7 +24,7 @@ const command: Command = {
       battles: { emoji: '⚔️', description: 'Pokemon battles', commands: ['/battle'] },
       social: { emoji: '👥', description: 'Profile and community features', commands: ['/profile', '/leaderboard', '/achievements', '/quests'] },
       moderation: { emoji: '🔨', description: 'Server moderation (Mods only)', commands: ['/ban', '/kick', '/warn', '/timeout', '/warnings', '/purge', '/lock', '/unlock', '/slowmode'] },
-      utility: { emoji: '🔧', description: 'Utility commands', commands: ['/ping', '/help', '/setup', '/welcome', '/professor', '/giveaway', '/config'] },
+      utility: { emoji: '🔧', description: 'Utility commands', commands: ['/ping', '/help', '/setup', '/welcome', '/giveaway', '/config'] },
     };
 
     if (category && categories[category]) {

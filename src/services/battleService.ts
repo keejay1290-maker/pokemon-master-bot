@@ -340,6 +340,13 @@ export async function saveBattleResult(
   const xpGain = 100 + state.turn * 2;
   await addXp(client.prisma, winnerId, xpGain);
 
+  // Coin reward for winner
+  const coinReward = 50 + state.turn * 2 + (isRanked ? 100 : 0);
+  await client.prisma.user.update({
+    where: { id: winnerId },
+    data: { balance: { increment: coinReward } },
+  });
+
   // Check achievement milestones for the winner (fire-and-forget)
   checkAndAwardAchievements(client, winnerId).catch(() => {});
   // Advance 'battle_win' quests (fire-and-forget)

@@ -3,6 +3,7 @@ import type { BotClient } from '../types/index.js';
 import { checkAutoMod } from '../services/moderationService.js';
 import { handleSpawnMessage } from '../services/spawnService.js';
 import { askProfessor } from '../services/groqService.js';
+import { ensureUser } from '../services/userService.js';
 
 // Per-user cooldown for mention responses (60s) — stored in Redis
 const MENTION_COOLDOWN = 60;
@@ -16,10 +17,11 @@ export async function handleMessageCreate(message: Message, client: BotClient) {
   // Random spawn trigger
   await handleSpawnMessage(message, client).catch(() => {});
 
-  // XP gain (60s cooldown)
+  // XP gain (60s cooldown) — ensureUser first to avoid FK violation on new members
   const xpKey = `xp:cooldown:${message.guild.id}:${message.author.id}`;
-  const hasXpCooldown = await client.redis.get(xpKey);
+  const hasXpCooldown = await client.redis.get(xpKey).catch(() => null);
   if (!hasXpCooldown) {
+    await ensureUser(client.prisma, message.author).catch(() => {});
     const xpGain = Math.floor(Math.random() * 15) + 5;
     await client.prisma.guildUser.upsert({
       where: { guildId_userId: { guildId: message.guild.id, userId: message.author.id } },
@@ -29,7 +31,7 @@ export async function handleMessageCreate(message: Message, client: BotClient) {
     await client.redis.set(xpKey, '1', { EX: 60 });
   }
 
-  // Bot mention → Professor Oak AI
+  // Bot mention → Professor Grim AI
   if (client.user && message.mentions.has(client.user)) {
     await handleMentionAI(message, client).catch((err) => {
       client.logger?.error('handleMentionAI uncaught error:', err);
@@ -77,9 +79,9 @@ async function handleMentionAI(message: Message, client: BotClient) {
   await message.reply({
     embeds: [new EmbedBuilder()
       .setColor(0x3b82f6)
-      .setAuthor({ name: 'Professor Oak', iconURL: client.user?.displayAvatarURL() })
+      .setAuthor({ name: 'Professor Grim', iconURL: client.user?.displayAvatarURL() })
       .setDescription(answer)
-      .setFooter({ text: 'Ask me anything about Pokémon!' })],
+      .setFooter({ text: 'Ask me anything about Pokémon or the GrimRipperCards server!' })],
   });
 
   // Best-effort cooldown set — Redis unavailability should not block the response

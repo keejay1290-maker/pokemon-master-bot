@@ -2,7 +2,7 @@ import { Message, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Co
 import type { BotClient } from '../types/index.js';
 import { TypeColors } from '../utils/embeds.js';
 import { REDIS_KEYS, REDIS_TTLS, deserializeSpawn, serializeSpawn } from '../utils/redisKeys.js';
-import { addXp } from './userService.js';
+import { addXp, ensureUser } from './userService.js';
 import { checkAndAwardAchievements } from './achievementService.js';
 import { incrementQuestProgress } from './questService.js';
 
@@ -141,6 +141,9 @@ export async function spawnPokemon(client: BotClient, guildId: string, channelId
             if (Math.random() < bonusRate) finalIsShiny = true;
           }
         }
+
+        // Guard FK — new user who hasn't sent a message yet won't have a User row
+        await ensureUser(client.prisma, interaction.user);
 
         const nature = ['Hardy','Lonely','Brave','Adamant','Naughty','Bold','Docile','Relaxed','Impish','Lax','Timid','Hasty','Serious','Jolly','Naive','Modest','Mild','Quiet','Bashful','Rash','Calm','Gentle','Sassy','Careful','Quirky'][Math.floor(Math.random() * 25)];
 
