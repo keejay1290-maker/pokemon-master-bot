@@ -149,14 +149,9 @@ function buyEmbed(item: ShopItem, qty: number, balance: number) {
     .setFooter({ text: canAfford ? 'Pick a quantity then click Buy' : 'Not enough coins — try a smaller quantity' });
 }
 
-// ── Command ───────────────────────────────────────────────────────────────────
+// ── Shared handler (used by both /shop and /buy) ──────────────────────────────
 
-const command: Command = {
-  data: new SlashCommandBuilder()
-    .setName('shop')
-    .setDescription('Browse and buy items from the PokéMart — select, pick quantity, and buy with buttons'),
-
-  async execute(interaction: ChatInputCommandInteraction, client: BotClient) {
+export async function openShop(interaction: ChatInputCommandInteraction, client: BotClient) {
     await interaction.deferReply();
 
     let balance = (await client.prisma.user.findUnique({ where: { id: interaction.user.id } }))?.balance ?? 0;
@@ -276,6 +271,16 @@ const command: Command = {
     collector.on('end', () => {
       interaction.editReply({ components: [] }).catch(() => {});
     });
+}
+
+// ── Command ───────────────────────────────────────────────────────────────────
+
+const command: Command = {
+  data: new SlashCommandBuilder()
+    .setName('shop')
+    .setDescription('Browse and buy items from the PokéMart — select, pick quantity, and buy with buttons'),
+  async execute(interaction: ChatInputCommandInteraction, client: BotClient) {
+    return openShop(interaction, client);
   },
 };
 

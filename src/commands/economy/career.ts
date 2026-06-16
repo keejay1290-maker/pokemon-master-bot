@@ -256,11 +256,11 @@ async function handleWork(interaction: ChatInputCommandInteraction, client: BotC
   if (!career) { await interaction.reply({ content: '❌ Unknown career.', ephemeral: true }); return; }
 
   try {
-    const { onCooldown, remaining } = await checkCooldown(client, interaction.user.id, career.cooldownKey, career.cooldown);
+    const { onCooldown, remaining } = await checkCooldown(client, interaction.user.id, 'career:work', career.cooldown);
     if (onCooldown) {
       await interaction.reply({
-        embeds: [new EmbedBuilder().setColor(0xff4444).setTitle(`⏰ ${careerName} Cooldown`)
-          .setDescription(`Come back in **${formatDuration(remaining!)}**.`)],
+        embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('⏰ Career Cooldown')
+          .setDescription(`You already worked a shift! All careers share a cooldown.\nCome back in **${formatDuration(remaining!)}**.`)],
         ephemeral: true,
       });
       return;
@@ -291,7 +291,7 @@ async function handleWork(interaction: ChatInputCommandInteraction, client: BotC
   const reward = Math.floor(baseReward * levelScaling * tierMult);
   const xpGain = Math.floor(Math.max(20, reward / 30));
 
-  await setCooldown(client, interaction.user.id, career.cooldownKey, career.cooldown);
+  await setCooldown(client, interaction.user.id, 'career:work', career.cooldown);
 
   await client.prisma.user.update({
     where: { id: interaction.user.id },
