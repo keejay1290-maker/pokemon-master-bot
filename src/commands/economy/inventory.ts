@@ -20,9 +20,9 @@ const ITEM_EFFECTS: Record<string, string> = {
   super_rod: '+Fisher reward tier 3',
   research_kit: '+Researcher XP & rewards',
   field_scanner: '+Ranger rare encounters',
-  incubator: '+Breeder egg rewards',
-  pickaxe: 'Enables /miner',
-  drill: '+Miner fossil rewards',
+  incubator: 'Career equipment (legacy)',
+  pickaxe: 'Required for /work miner',
+  drill: '+Miner career rewards',
 };
 
 const command: Command = {

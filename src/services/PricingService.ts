@@ -49,7 +49,7 @@ export class PricingService {
     super_rod:     { itemId: 'super_rod',     name: 'Super Rod',     gamePrice: 1500, estimatedValueGBP: 15.00, emoji: '🎣', description: 'Top-tier fishing rod.', category: 'career' },
     research_kit:  { itemId: 'research_kit',  name: 'Research Kit',  gamePrice: 300, estimatedValueGBP: 3.00, emoji: '🔬', description: 'Improves researcher rewards.', category: 'career' },
     field_scanner: { itemId: 'field_scanner', name: 'Field Scanner', gamePrice: 800, estimatedValueGBP: 8.00, emoji: '📡', description: 'Boosts rare encounter rates.', category: 'career' },
-    incubator:     { itemId: 'incubator',     name: 'Incubator',     gamePrice: 400, estimatedValueGBP: 4.00, emoji: '🥚', description: 'Improves breeder rewards.', category: 'career' },
+    incubator:     { itemId: 'incubator',     name: 'Incubator',     gamePrice: 400, estimatedValueGBP: 4.00, emoji: '🥚', description: 'Legacy career equipment.', category: 'career' },
     pickaxe:       { itemId: 'pickaxe',       name: 'Pickaxe',       gamePrice: 200, estimatedValueGBP: 2.00, emoji: '⛏️', description: 'Required for mining.', category: 'career' },
     drill:         { itemId: 'drill',         name: 'Drill',         gamePrice: 1000, estimatedValueGBP: 10.00, emoji: '🔩', description: 'Advanced drill, unlocks fossils.', category: 'career' },
     // Career shop items

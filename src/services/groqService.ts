@@ -46,7 +46,7 @@ Bot commands you know (always refer to these accurately):
 - /collection — view your card collection and estimated market value
 - /giftpack — (admin) gift packs to a user
 - /daily /weekly /monthly — claim periodic coin rewards
-- /fish /mine /ranger /researcher — career commands that earn PokéCoins
+- /work — interactive career scenarios (miner, researcher, ranger, fisher, rocket)
 - /shop or /buy — browse and buy items (Poké Balls, Exp. Candy, Shiny Charm, career tools) — fully button-based
 - /inventory — view your owned items
 - /bank — check your PokéCoin balance and transaction history
