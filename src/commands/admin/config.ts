@@ -12,6 +12,10 @@ const command: Command = {
         .addIntegerOption((o) => o.setName('daily_reward').setDescription('Daily reward amount').setMinValue(1))
         .addIntegerOption((o) => o.setName('weekly_reward').setDescription('Weekly reward amount').setMinValue(1))
         .addIntegerOption((o) => o.setName('work_cooldown').setDescription('Work cooldown in seconds').setMinValue(60))
+        .addIntegerOption((o) => o.setName('daily_cooldown').setDescription('Daily cooldown in seconds').setMinValue(60))
+        .addIntegerOption((o) => o.setName('catch_cooldown').setDescription('Catch cooldown in seconds').setMinValue(1))
+        .addIntegerOption((o) => o.setName('battle_cooldown').setDescription('Battle cooldown in seconds').setMinValue(1))
+        .addIntegerOption((o) => o.setName('pack_cooldown').setDescription('Pack open cooldown in seconds').setMinValue(1))
     )
     .addSubcommand((s) =>
       s.setName('spawns').setDescription('Configure spawn settings')
