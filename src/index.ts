@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { GatewayIntentBits, Partials, Collection } from 'discord.js';
+import { GatewayIntentBits, Partials, Collection, REST, Routes } from 'discord.js';
 import { PrismaClient } from '@prisma/client';
 import { createClient } from 'redis';
 import path from 'path';
@@ -135,6 +135,22 @@ async function main() {
   client.once('ready', async () => {
     boot(`ready as ${client.user?.tag}`);
     logger.info(`Bot ready as ${client.user?.tag}`);
+
+    // Auto-register slash commands with Discord API on every startup.
+    // This ensures new commands (e.g. /balance) are always registered without
+    // requiring a separate manual `deploy:commands` run.
+    try {
+      const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN!);
+      const commandData = Array.from(client.commands.values()).map((c) => c.data.toJSON());
+      boot(`registering ${commandData.length} slash commands...`);
+      await rest.put(Routes.applicationCommands(client.user!.id), { body: commandData });
+      boot(`slash commands registered: ${commandData.length}`);
+      logger.info(`Registered ${commandData.length} slash commands`);
+    } catch (err) {
+      bootErr(`slash command registration failed: ${(err as Error)?.message || err}`);
+      logger.error('Failed to register slash commands:', err);
+    }
+
     startSpawnService(client);
     startJobService(client);
   });
