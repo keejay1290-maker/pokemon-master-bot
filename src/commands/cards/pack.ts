@@ -313,20 +313,86 @@ async function handleOpen(interaction: ChatInputCommandInteraction, client: BotC
         resolvedCards
       );
     } catch (e: any) {
-      // Refund the pack — session creation failed
+      // If Redis/cache is unavailable, fall back to a non-interactive pack open:
+      // persist all cards immediately and show a summary embed (no session).
+      if (e?.message === 'REDIS_UNAVAILABLE') {
+        try {
+          // Upsert card definitions and user cards in a transaction
+          await client.prisma.$transaction(async (tx) => {
+            for (const card of resolvedCards) {
+              await tx.card.upsert({
+                where: { id: card.id },
+                update: { marketValue: card.marketValue ?? undefined },
+                create: {
+                  id: card.id,
+                  name: card.name,
+                  supertype: 'Pokémon',
+                  subtypes: [],
+                  types: card.types ?? [],
+                  setId,
+                  setName: setInfo?.name ?? chosenPack.itemName.replace(' Pack', ''),
+                  number: card.number,
+                  rarity: card.rarity,
+                  imageSmall: card.imageSmall ?? null,
+                  imageLarge: card.imageLarge ?? null,
+                  marketValue: card.marketValue ?? null,
+                },
+              });
+
+              await tx.userCard.upsert({
+                where: { userId_cardId_isFoil: { userId: interaction.user.id, cardId: card.id, isFoil: false } },
+                update: { quantity: { increment: 1 } },
+                create: { userId: interaction.user.id, cardId: card.id, quantity: 1, isFoil: false },
+              });
+            }
+
+            // update cardsCollected
+            await tx.user.update({ where: { id: interaction.user.id }, data: { cardsCollected: { increment: resolvedCards.length } } });
+          });
+
+          const newCount = resolvedCards.filter((c) => c.isNew).length;
+          const dupCount = resolvedCards.length - newCount;
+
+          const summary = new EmbedBuilder()
+            .setColor(0x9b59b6)
+            .setTitle(`📦 ${setInfo?.name ?? chosenPack.itemName.replace(' Pack', '')} — Pack Opened`)
+            .setDescription(`Your pack was opened without the interactive reveal (cache offline). All cards have been added to your collection.`)
+            .addFields(
+              { name: '🃏 Cards Opened', value: `${resolvedCards.length}`, inline: true },
+              { name: '✨ New Cards', value: `${newCount}`, inline: true },
+              { name: '♻️ Duplicates', value: `${dupCount}`, inline: true },
+            )
+            .setTimestamp();
+
+          const { safeEditReply } = await import('../../utils/interactionReply.js');
+          await safeEditReply(interaction, { embeds: [summary], components: [] });
+          return;
+        } catch (err) {
+          console.error('Pack fallback failed:', err);
+          // As a last resort, refund the pack
+          await client.prisma.userInventory.upsert({
+            where: { userId_itemId: { userId: interaction.user.id, itemId: chosenItemId } },
+            update: { quantity: { increment: 1 } },
+            create: { userId: interaction.user.id, itemId: chosenItemId, itemName: chosenPack.itemName, quantity: 1 },
+          });
+          await interaction.editReply({ content: '❌ Pack reveal is temporarily unavailable and fallback failed. Your pack has been refunded.', embeds: [], components: [] });
+          return;
+        }
+      }
+
+      // Refund the pack — session creation failed for other reasons
       await client.prisma.userInventory.upsert({
         where: { userId_itemId: { userId: interaction.user.id, itemId: chosenItemId } },
         update: { quantity: { increment: 1 } },
         create: { userId: interaction.user.id, itemId: chosenItemId, itemName: chosenPack.itemName, quantity: 1 },
       });
-      const msg = e.message === 'REDIS_UNAVAILABLE'
-        ? '❌ Pack reveal is temporarily unavailable (cache offline). Your pack has been refunded — try again in a moment.'
-        : '❌ Failed to start pack session. Your pack has been refunded.';
+      const msg = '❌ Failed to start pack session. Your pack has been refunded.';
       await interaction.editReply({ content: msg, embeds: [], components: [] });
       return;
     }
 
-    await interaction.editReply({ embeds: [sessionResult.embed], components: [sessionResult.row] });
+    const { safeEditReply } = await import('../../utils/interactionReply.js');
+    await safeEditReply(interaction, { embeds: [sessionResult.embed], components: [sessionResult.row] });
 
     // Fire-and-forget quest/achievement tracking for opening a pack
     incrementQuestProgress(client.prisma, interaction.user.id, 'open_pack', 1).catch(() => {});

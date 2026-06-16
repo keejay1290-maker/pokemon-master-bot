@@ -207,7 +207,7 @@ export async function handlePackReveal(interaction: ButtonInteraction, client: B
   try {
     const raw = await client.redis.get(sessionKey);
     if (!raw) {
-      await interaction.update({ content: '❌ Session expired. Use `/pack open` to start again.', embeds: [], components: [] });
+      await interaction.update({ content: '❌ Session expired. Use `/pack open` to start again.', embeds: [], components: [] }).catch(() => {});
       return;
     }
 
@@ -215,13 +215,13 @@ export async function handlePackReveal(interaction: ButtonInteraction, client: B
 
     // Ownership check
     if (interaction.user.id !== session.userId) {
-      await interaction.reply({ content: '❌ This is not your pack.', ephemeral: true });
+      await interaction.reply({ content: '❌ This is not your pack.', ephemeral: true }).catch(() => {});
       return;
     }
 
     const card = session.cards[session.currentIndex];
     if (!card) {
-      await interaction.update({ content: '❌ Session corrupted.', embeds: [], components: [] });
+      await interaction.update({ content: '❌ Session corrupted.', embeds: [], components: [] }).catch(() => {});
       return;
     }
 
@@ -230,68 +230,129 @@ export async function handlePackReveal(interaction: ButtonInteraction, client: B
     // Calculate market value for this card
     const marketValue = card.marketValue ?? calculateMarketValue(card.rarity, session.setId, card.name);
 
-    // Write this card to the user's collection NOW (one card per reveal)
-    await client.prisma.card.upsert({
-      where: { id: card.id },
-      update: { marketValue },
-      create: {
-        id: card.id,
-        name: card.name,
-        supertype: 'Pokémon',
-        subtypes: [],
-        types: [],
-        setId: session.setId,
-        setName: session.setName,
-        number: card.number,
-        rarity: card.rarity,
-        imageSmall: card.imageSmall ?? null,
-        imageLarge: card.imageLarge ?? null,
-        marketValue,
-      },
-    });
-
-    await client.prisma.userCard.upsert({
-      where: { userId_cardId_isFoil: { userId: session.userId, cardId: card.id, isFoil: false } },
-      update: { quantity: { increment: 1 } },
-      create: { userId: session.userId, cardId: card.id, quantity: 1, isFoil: false },
-    });
-
-    await client.prisma.user.update({
-      where: { id: session.userId },
-      data: { cardsCollected: { increment: 1 } },
-    });
-
-    // Advance session state
-    session.revealedCardIds.push(card.id);
-    session.currentIndex += 1;
-
-    const isLastCard = session.currentIndex >= session.cards.length;
-
-    if (isLastCard) {
-      // Delete session — pack is done
-      await client.redis.del(sessionKey);
-
-      // Check if user has more packs
-      const hasMore = await client.prisma.userInventory.findFirst({
-        where: { userId: session.userId, itemId: { startsWith: 'pack:' }, quantity: { gt: 0 } },
+    // Process reveal with internal error handling — if something fails (Discord context limit, Redis issue),
+    // persist remaining cards and close the session to avoid leaving users stuck.
+    try {
+      // Write this card to the user's collection NOW (one card per reveal)
+      await client.prisma.card.upsert({
+        where: { id: card.id },
+        update: { marketValue },
+        create: {
+          id: card.id,
+          name: card.name,
+          supertype: 'Pokémon',
+          subtypes: [],
+          types: [],
+          setId: session.setId,
+          setName: session.setName,
+          number: card.number,
+          rarity: card.rarity,
+          imageSmall: card.imageSmall ?? null,
+          imageLarge: card.imageLarge ?? null,
+          marketValue,
+        },
       });
 
-      await interaction.update({
-        embeds: [buildSummaryEmbed(session)],
-        components: [summaryButtons(session.userId, !!hasMore)],
+      await client.prisma.userCard.upsert({
+        where: { userId_cardId_isFoil: { userId: session.userId, cardId: card.id, isFoil: false } },
+        update: { quantity: { increment: 1 } },
+        create: { userId: session.userId, cardId: card.id, quantity: 1, isFoil: false },
       });
-    } else {
-      // Update session in Redis
-      await client.redis.set(sessionKey, JSON.stringify(session), { EX: 900 });
 
-      const embed = buildRevealEmbed(session, card, cardNum);
-      await interaction.update({
-        embeds: [embed],
-        components: [revealButton(sessionId)],
+      await client.prisma.user.update({
+        where: { id: session.userId },
+        data: { cardsCollected: { increment: 1 } },
       });
+
+      // Advance session state
+      session.revealedCardIds.push(card.id);
+      session.currentIndex += 1;
+
+      const isLastCard = session.currentIndex >= session.cards.length;
+
+      if (isLastCard) {
+        // Delete session — pack is done
+        await client.redis.del(sessionKey).catch(() => {});
+
+        // Check if user has more packs
+        const hasMore = await client.prisma.userInventory.findFirst({
+          where: { userId: session.userId, itemId: { startsWith: 'pack:' }, quantity: { gt: 0 } },
+        });
+
+        await interaction.update({
+          embeds: [buildSummaryEmbed(session)],
+          components: [summaryButtons(session.userId, !!hasMore)],
+        }).catch(() => {});
+      } else {
+        // Update session in Redis
+        await client.redis.set(sessionKey, JSON.stringify(session), { EX: 900 }).catch(() => {});
+
+        const embed = buildRevealEmbed(session, card, cardNum);
+        await interaction.update({
+          embeds: [embed],
+          components: [revealButton(sessionId)],
+        }).catch(() => { throw new Error('UPDATE_FAILED'); });
+      }
+    } catch (err: any) {
+      client.logger.error('Pack reveal processing error — falling back to close session', err);
+
+      // Persist remaining cards (those not yet revealed) to the user's collection to avoid data loss
+      const remaining = session.cards.slice(session.currentIndex);
+      try {
+        await client.prisma.$transaction(async (tx) => {
+          for (const c of remaining) {
+            await tx.card.upsert({
+              where: { id: c.id },
+              update: { marketValue: c.marketValue ?? undefined },
+              create: {
+                id: c.id,
+                name: c.name,
+                supertype: 'Pokémon',
+                subtypes: [],
+                types: c.types ?? [],
+                setId: session.setId,
+                setName: session.setName,
+                number: c.number,
+                rarity: c.rarity,
+                imageSmall: c.imageSmall ?? null,
+                imageLarge: c.imageLarge ?? null,
+                marketValue: c.marketValue ?? null,
+              },
+            });
+
+            await tx.userCard.upsert({
+              where: { userId_cardId_isFoil: { userId: session.userId, cardId: c.id, isFoil: false } },
+              update: { quantity: { increment: 1 } },
+              create: { userId: session.userId, cardId: c.id, quantity: 1, isFoil: false },
+            });
+          }
+
+          // Increment collected count
+          await tx.user.update({ where: { id: session.userId }, data: { cardsCollected: { increment: remaining.length } } });
+        });
+      } catch (persistErr) {
+        client.logger.error('Failed to persist remaining pack cards during fallback', persistErr);
+        // As a last resort, refund the pack to user's inventory
+        await client.prisma.userInventory.upsert({
+          where: { userId_itemId: { userId: session.userId, itemId: `pack:${session.setId}` } },
+          update: { quantity: { increment: 1 } },
+          create: { userId: session.userId, itemId: `pack:${session.setId}`, itemName: `${session.setName} Pack`, quantity: 1 },
+        }).catch(() => {});
+      }
+
+      // Close the session
+      await client.redis.del(sessionKey).catch(() => {});
+
+      // Notify user
+      try {
+        await interaction.followUp({ content: `⚠️ Pack session closed due to an error. Remaining ${remaining.length} card(s) were added to your collection.`, ephemeral: true }).catch(() => {});
+      } catch { /* ignore */ }
     }
+  } catch (err) {
+    client.logger.error('Pack reveal outer error', err);
+    if (!interaction.replied && !interaction.deferred) await interaction.reply({ content: '❌ An error occurred.', ephemeral: true }).catch(() => {});
   } finally {
-    await client.redis.del(lockKey);
+    await client.redis.del(lockKey).catch(() => {});
   }
 }
 

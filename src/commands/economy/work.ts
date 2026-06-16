@@ -1,6 +1,6 @@
 import {
   SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder,
-  ActionRowBuilder, ButtonBuilder, ComponentType,
+  ActionRowBuilder, ButtonBuilder, ComponentType, Message, ButtonInteraction,
 } from 'discord.js';
 import type { BotClient, Command } from '../../types/index.js';
 import { formatNumber, formatDuration } from '../../utils/embeds.js';
@@ -39,7 +39,8 @@ const command: Command = {
       const cooldownService = new CooldownService(client);
       const { onCooldown, remaining } = await cooldownService.checkCareerForGuild(interaction.user.id, interaction.guild?.id);
       if (onCooldown) {
-        await interaction.reply({
+        const { safeReply } = await import('../../utils/interactionReply.js');
+        await safeReply(interaction, {
           embeds: [new EmbedBuilder()
             .setColor(0xff4444)
             .setTitle('⏰ Career Cooldown')
@@ -64,7 +65,8 @@ const command: Command = {
             `Purchase one at \`/shop\` → Career Tools, or use \`/career shop ${careerName.toLowerCase()}\`.`,
           )
           .setTimestamp();
-        await interaction.editReply({ embeds: [embed] });
+        const { safeEditReply } = await import('../../utils/interactionReply.js');
+        await safeEditReply(interaction, { embeds: [embed] });
         return;
       }
 
@@ -81,19 +83,25 @@ const command: Command = {
       const scenarioEmbed = buildScenarioEmbed(career, scenario, equipTier, jobLevel);
       const buttons = buildChoiceButtons(interaction.user.id, careerName, scenario);
 
-      const msg = await interaction.editReply({
-        embeds: [scenarioEmbed],
-        components: buttons.map((r) => r.toJSON()),
-      });
+        const { safeEditReply } = await import('../../utils/interactionReply.js');
+        const msgAny = await safeEditReply(interaction, {
+         embeds: [scenarioEmbed],
+         components: buttons.map((r) => r.toJSON()),
+       }) as any;
+        if (!msgAny || typeof msgAny.createMessageComponentCollector !== 'function') {
+          await safeEditReply(interaction, { content: '❌ Could not start interactive scenario. Please try again.' });
+          return;
+        }
+        const msg = msgAny as Message;
 
       // ── Button collector ────────────────────────────────────────────
       const collector = msg.createMessageComponentCollector({
         componentType: ComponentType.Button,
         time: 30_000,
-        filter: (btn) => btn.user.id === interaction.user.id,
+        filter: (btn: ButtonInteraction) => btn.user.id === interaction.user.id,
       });
 
-      collector.on('collect', (btn) => {
+      collector.on('collect', (btn: ButtonInteraction) => {
         void (async () => {
           // Parse custom ID: work:{userId}:{careerName}:{scenarioId}:{choiceIndex}
           const parts = btn.customId.split(':');
@@ -206,7 +214,7 @@ const command: Command = {
         })();
       });
 
-      collector.on('end', (_, reason) => {
+      collector.on('end', (_collected: any, reason: string) => {
         if (reason === 'time') {
           const disabledButtons = buttons.map((row) => {
             const disabledRow = ActionRowBuilder.from(row);
