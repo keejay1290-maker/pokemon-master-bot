@@ -3,7 +3,8 @@ import type { BotClient, Command } from '../../types/index.js';
 import { CooldownService } from '../../services/CooldownService.js';
 import { addXp } from '../../services/userService.js';
 
-const COOLDOWN = 3600;
+// Default career cooldown in seconds — will be overridden by guild settings when available
+const DEFAULT_COOLDOWN = 3600;
 
 const RESPONSES = [
   { msg: 'A kind trainer tossed you some change!',             min: 50,  max: 150 },
@@ -31,7 +32,8 @@ const command: Command = {
 
   async execute(interaction: ChatInputCommandInteraction, client: BotClient) {
     const cooldownService = new CooldownService(client);
-    const { onCooldown, remaining } = await cooldownService.checkCareer(interaction.user.id);
+    // Respect guild-configured work cooldown so admin changes apply immediately
+    const { onCooldown, remaining } = await cooldownService.checkCareerForGuild(interaction.user.id, interaction.guild?.id);
     if (onCooldown) {
       await interaction.reply({
         embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('⏰ Career Cooldown').setDescription(`All careers are on cooldown. Come back in **${CooldownService.formatDuration(remaining!)}**.`)],
@@ -40,7 +42,11 @@ const command: Command = {
       return;
     }
 
-    await cooldownService.setCareer(interaction.user.id, COOLDOWN);
+    // Persist canonical lastBeg timestamp and set configured cooldown
+    const guild = await client.prisma.guild.findUnique({ where: { id: interaction.guild?.id ?? '' } });
+    const cooldownSecs = guild?.workCooldown ?? DEFAULT_COOLDOWN;
+    await client.prisma.user.update({ where: { id: interaction.user.id }, data: { lastBeg: new Date() } }).catch(() => {});
+    await cooldownService.setCareer(interaction.user.id, cooldownSecs);
 
     const res = RESPONSES[Math.floor(Math.random() * RESPONSES.length)];
         const amount = res.min > 0 ? Math.floor(Math.random() * (res.max - res.min) + res.min) : 0;

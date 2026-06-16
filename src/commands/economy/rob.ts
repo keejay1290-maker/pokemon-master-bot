@@ -26,7 +26,7 @@ const command: Command = {
     }
 
     const cooldownService = new CooldownService(client);
-    const { onCooldown, remaining } = await cooldownService.checkCareer(interaction.user.id);
+    const { onCooldown, remaining } = await cooldownService.checkCareerForGuild(interaction.user.id, interaction.guild?.id);
     if (onCooldown) {
       await interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('⏰ Career Cooldown').setDescription(`All careers are on cooldown. Come back in **${CooldownService.formatDuration(remaining!)}**.`)], ephemeral: true });
       return;
@@ -54,7 +54,10 @@ const command: Command = {
       }
     }
 
-    await cooldownService.setCareer(interaction.user.id, 86400);
+    // Use configured rob cooldown (falls back to guild.workCooldown or 24h default) and persist canonical lastRob
+    const robCooldown = guild?.robCooldown ?? guild?.workCooldown ?? 86400;
+    await client.prisma.user.update({ where: { id: interaction.user.id }, data: { lastRob: new Date() } }).catch(() => {});
+    await cooldownService.setCareer(interaction.user.id, robCooldown);
 
     const successRate = guild?.robSuccessRate ?? 0.4;
     const success = Math.random() < successRate;

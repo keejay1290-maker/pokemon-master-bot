@@ -3,6 +3,7 @@ import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType,
 } from 'discord.js';
 import type { BotClient, Command } from '../../types/index.js';
+import { CooldownService } from '../../services/CooldownService.js';
 import { formatNumber } from '../../utils/embeds.js';
 
 // ── Career data from scenario engine ──────────────────────────────────────────
@@ -220,12 +221,10 @@ async function handleView(interaction: ChatInputCommandInteraction, client: BotC
       const totalEarned = job?.totalEarned ?? 0;
       const tierName = getEquipTierName(careerMeta.name, level);
 
-      let cdStatus = '✅ Ready';
-      if (redisReady) {
-        const cdKey = `cooldown:${target.id}:career:work`;
-        const cdTtl = await client.redis.ttl(cdKey);
-        cdStatus = cdTtl > 0 ? `⏰ ${Math.ceil(cdTtl / 60)}m` : '✅ Ready';
-      }
+      // Use guild-aware cooldown check so admin changes apply immediately
+      const cooldownService = new CooldownService(client);
+      const careerCd = await cooldownService.checkCareerForGuild(target.id, interaction.guild?.id);
+      const cdStatus = careerCd.onCooldown ? `⏰ ${CooldownService.formatDuration(careerCd.remaining!)}` : '✅ Ready';
 
       const usesToNextLevel = 10 - (timesWorked % 10);
       const filled = 10 - usesToNextLevel;

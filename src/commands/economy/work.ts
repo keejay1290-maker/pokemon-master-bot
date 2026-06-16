@@ -5,6 +5,7 @@ import {
 import type { BotClient, Command } from '../../types/index.js';
 import { formatNumber, formatDuration } from '../../utils/embeds.js';
 import { checkCooldown, setCooldown } from '../../utils/cooldown.js';
+import { CooldownService } from '../../services/CooldownService.js';
 import { addXp } from '../../services/userService.js';
 import {
   CAREERS, getCareerChoices, getButtonStyle, resolveOutcome, getEquipmentTier,
@@ -34,9 +35,9 @@ const command: Command = {
 
     try {
       // ── Cooldown check ──────────────────────────────────────────────
-      const { onCooldown, remaining } = await checkCooldown(
-        client, interaction.user.id, 'career:work', 3600,
-      );
+      // Use guild-aware cooldown check so admin changes apply immediately
+      const cooldownService = new CooldownService(client);
+      const { onCooldown, remaining } = await cooldownService.checkCareerForGuild(interaction.user.id, interaction.guild?.id);
       if (onCooldown) {
         await interaction.reply({
           embeds: [new EmbedBuilder()
@@ -152,7 +153,11 @@ const command: Command = {
           }
 
           // ── Set cooldown ─────────────────────────────────────────────
-          await setCooldown(client, interaction.user.id, 'career:work', 3600);
+          // Persist canonical last-work timestamp and set Redis cooldown using configured value
+          const guild = await client.prisma.guild.findUnique({ where: { id: interaction.guild?.id ?? '' } });
+          const configured = guild?.workCooldown ?? 3600;
+          await client.prisma.user.update({ where: { id: interaction.user.id }, data: { lastWork: new Date() } }).catch(() => {});
+          await cooldownService.setCareer(interaction.user.id, configured);
 
           // ── XP ───────────────────────────────────────────────────────
           const { leveledUp: trainerLeveledUp, newLevel } = await addXp(
