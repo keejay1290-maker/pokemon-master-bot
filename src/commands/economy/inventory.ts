@@ -13,7 +13,7 @@ const ITEM_EMOJIS: Record<string, string> = {
 
 const ITEM_EFFECTS: Record<string, string> = {
   shiny_charm: '3× shiny catch rate',
-  amulet_coin: 'Double /work coins',
+  amulet_coin: 'Double career earnings',
   coin_case: '+10% daily reward',
   old_rod: '+Fisher reward tier 1',
   good_rod: '+Fisher reward tier 2',
