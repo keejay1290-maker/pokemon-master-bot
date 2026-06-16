@@ -347,6 +347,12 @@ export async function createPackSession(
     revealedCardIds: [],
   };
 
+  // Respect server pack cooldown when creating a session (prevent spam opening)
+  try {
+    const guild = await client.prisma.guild.findUnique({ where: { id: guildId } });
+    const cd = guild?.packCooldown ?? 60;
+    await client.redis.set(`cooldown:${userId}:pack`, (Date.now() + cd * 1000).toString(), { EX: cd });
+  } catch { /* non-fatal */ }
   await client.redis.set(`pack:session:${sessionId}`, JSON.stringify(session), { EX: 900 });
 
   return {
