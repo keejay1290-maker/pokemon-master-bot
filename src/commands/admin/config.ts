@@ -46,9 +46,18 @@ const command: Command = {
       const daily = interaction.options.getInteger('daily_reward');
       const weekly = interaction.options.getInteger('weekly_reward');
       const work = interaction.options.getInteger('work_cooldown');
+      const dailyCd = interaction.options.getInteger('daily_cooldown');
+      const catchCd = interaction.options.getInteger('catch_cooldown');
+      const battleCd = interaction.options.getInteger('battle_cooldown');
+      const packCd = interaction.options.getInteger('pack_cooldown');
+
       if (daily !== null) data.dailyReward = daily;
       if (weekly !== null) data.weeklyReward = weekly;
       if (work !== null) data.workCooldown = work;
+      if (dailyCd !== null) data.dailyCooldown = dailyCd;
+      if (catchCd !== null) data.catchCooldown = catchCd;
+      if (battleCd !== null) data.battleCooldown = battleCd;
+      if (packCd !== null) data.packCooldown = packCd;
 
       await client.prisma.guild.update({ where: { id: interaction.guild.id }, data });
       await interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00ff00).setTitle('✅ Economy Updated').setDescription(JSON.stringify(data, null, 2))], ephemeral: true });
