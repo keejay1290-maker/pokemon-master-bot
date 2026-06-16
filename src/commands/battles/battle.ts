@@ -110,6 +110,17 @@ const command: Command = {
         },
       });
 
+      // Persist canonical lastBattle timestamp for cooldowns
+      try {
+        await client.prisma.user.update({ where: { id: interaction.user.id }, data: { lastWork: new Date() } }).catch(() => {});
+        await client.prisma.user.update({ where: { id: opponent.id }, data: { lastWork: new Date() } }).catch(() => {});
+        const guild = await client.prisma.guild.findUnique({ where: { id: interaction.guild!.id } });
+        const cd = guild?.battleCooldown ?? 300;
+        // set Redis keys for both players
+        await client.redis.set(`cooldown:${interaction.user.id}:battle`, (Date.now() + cd * 1000).toString(), { EX: cd }).catch(() => {});
+        await client.redis.set(`cooldown:${opponent.id}:battle`, (Date.now() + cd * 1000).toString(), { EX: cd }).catch(() => {});
+      } catch { /* non-fatal */ }
+
       // Speed-based first turn: faster active Pokémon's trainer goes first
       const chSpeed = challengerTeam[0]?.speed ?? 0;
       const opSpeed = opponentTeam[0]?.speed ?? 0;
