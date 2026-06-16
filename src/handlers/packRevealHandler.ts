@@ -324,6 +324,7 @@ export async function handlePackViewCollection(interaction: ButtonInteraction, c
 export async function createPackSession(
   client: BotClient,
   userId: string,
+  guildId: string | undefined,
   setId: string,
   setName: string,
   setLogoUrl: string | undefined,
@@ -349,7 +350,7 @@ export async function createPackSession(
 
   // Respect server pack cooldown when creating a session (prevent spam opening)
   try {
-    const guild = await client.prisma.guild.findUnique({ where: { id: guildId } });
+    const guild = guildId ? await client.prisma.guild.findUnique({ where: { id: guildId } }) : null;
     const cd = guild?.packCooldown ?? 60;
     await client.redis.set(`cooldown:${userId}:pack`, (Date.now() + cd * 1000).toString(), { EX: cd });
   } catch { /* non-fatal */ }

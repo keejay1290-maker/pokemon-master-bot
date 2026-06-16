@@ -306,6 +306,7 @@ async function handleOpen(interaction: ChatInputCommandInteraction, client: BotC
       sessionResult = await createPackSession(
         client,
         interaction.user.id,
+        interaction.guild?.id,
         setId,
         setInfo?.name ?? chosenPack.itemName.replace(' Pack', ''),
         setInfo?.images?.logo ?? undefined,

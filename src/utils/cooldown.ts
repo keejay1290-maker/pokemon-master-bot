@@ -7,7 +7,16 @@ export async function checkCooldown(
   cooldownSeconds: number
 ): Promise<{ onCooldown: boolean; remaining?: number }> {
   const key = `cooldown:${userId}:${command}`;
-  const cached = await client.redis.get(key);
+  // Redis may be unavailable or closed — guard so commands still work without cache.
+  let cached: string | null = null;
+  try {
+    if (client.redis && (client.redis.isReady ?? client.redis.isOpen ?? true)) {
+      // safe-get; many call sites expect string epoch stored earlier
+      cached = await client.redis.get(key).catch(() => null);
+    }
+  } catch {
+    cached = null;
+  }
 
   if (cached) {
     const expiresAt = parseInt(cached, 10);
@@ -26,7 +35,13 @@ export async function setCooldown(
 ): Promise<void> {
   const key = `cooldown:${userId}:${command}`;
   const expiresAt = Date.now() + cooldownSeconds * 1000;
-  await client.redis.set(key, expiresAt.toString(), { EX: cooldownSeconds });
+  try {
+    if (client.redis && (client.redis.isReady ?? client.redis.isOpen ?? true)) {
+      await client.redis.set(key, expiresAt.toString(), { EX: cooldownSeconds }).catch(() => {});
+    }
+  } catch {
+    // swallow — best-effort caching only
+  }
 }
 
 export function formatCooldown(seconds: number): string {
