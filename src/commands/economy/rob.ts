@@ -77,7 +77,7 @@ const command: Command = {
             await tx.user.update({ where: { id: target.id }, data: { balance: { decrement: stolen }, lastRobbed: new Date() } });
           }
           resultEmbed = new EmbedBuilder().setColor(0x00ff00).setTitle('🦹 Robbery Successful!')
-            .setDescription(`You sneaked into ${target.username}'s bag and stole **£${(stolen / 100).toFixed(2)}**!`).setTimestamp();
+            .setDescription(`You sneaked into ${target.username}'s bag and stole **${stolen.toLocaleString()} PokéCoins**!`).setTimestamp();
         } else {
           const fine = Math.min(Math.floor(currentRobber.balance * 0.15), 500);
           if (fine > 0) {
@@ -85,7 +85,7 @@ const command: Command = {
             await tx.user.update({ where: { id: target.id }, data: { balance: { increment: fine } } });
           }
           resultEmbed = new EmbedBuilder().setColor(0xff4444).setTitle('🚨 Caught!')
-            .setDescription(`You were caught trying to rob ${target.username}! You paid a **£${(fine / 100).toFixed(2)}** fine.`).setTimestamp();
+            .setDescription(`You were caught trying to rob ${target.username}! You paid a **${fine.toLocaleString()} PokéCoins** fine.`).setTimestamp();
         }
       });
       await interaction.reply({ embeds: [resultEmbed!] });

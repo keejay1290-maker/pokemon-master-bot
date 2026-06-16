@@ -17,7 +17,7 @@ const RESEARCHER_TABLE = [
 const command: Command = {
   data: new SlashCommandBuilder()
     .setName('researcher')
-    .setDescription('🔬 Conduct research and earn academic grants! Earn £GBP'),
+    .setDescription('🔬 Conduct research and earn academic grants! Earn PokéCoins'),
 
   async execute(interaction: ChatInputCommandInteraction, client: BotClient) {
     const cooldownService = new CooldownService(client);
@@ -52,7 +52,7 @@ const command: Command = {
     const embed = new EmbedBuilder()
       .setColor(0x9b59b6)
       .setTitle(`🔬 Researcher — ${result.emoji} ${result.name}`)
-      .setDescription(`**+£${(reward / 100).toFixed(2)}**`)
+      .setDescription(`**+${reward.toLocaleString()} PokéCoins**`)
       .addFields(
         { name: '📊 Career Level', value: `${jobLevel}${leveledUp ? ' → **Level Up!** 🎉' : ''}`, inline: true },
         { name: '⭐ Trainer XP', value: `+${xpGain} XP`, inline: true },

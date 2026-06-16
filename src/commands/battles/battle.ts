@@ -4,7 +4,6 @@ import {
 } from 'discord.js';
 import type { BotClient, Command, BattleState } from '../../types/index.js';
 import { loadBattleTeam, calcDamage, getMoveData, applyStatusDamage, checkFainted, saveBattleResult, checkAccuracy, checkStatusBlock, tryInflictStatus, statusLabel } from '../../services/battleService.js';
-import { getEffectivenessText } from '../../utils/pokemon.js';
 import { progressBar } from '../../utils/embeds.js';
 
 const command: Command = {
@@ -147,14 +146,33 @@ const command: Command = {
 
       await btn.update({ embeds: [battleEmbed], components: [battleRow] });
 
-      // Battle timeout
+      // Battle timeout - warn at 4 min, expire at 5 min
+      setTimeout(async () => {
+        const rawS = await client.redis.get(battleKey);
+        if (rawS) {
+          const s = deserializeBattle(rawS);
+          if (s && s.status !== 'finished') {
+            // Add timeout warning to battle log
+            const currentTurnName = s.currentTurnUserId === s.challengerId ? interaction.user.username : opponent.username;
+            s.battleLog.push(`⏰ **Timeout warning:** ${currentTurnName} has 60 seconds to act!`);
+            await client.redis.set(battleKey, serializeBattle(s), { EX: REDIS_TTLS.BATTLE });
+            
+            // Try to update the embed with the warning
+            try {
+              await msg.edit({ embeds: [buildBattleEmbed(s, interaction.user.username, opponent.username)], components: [buildBattleRow(s)] });
+            } catch { /* ignore */ }
+          }
+        }
+      }, 240000); // 4 min warning
+
+      // Actual timeout at 5 min
       setTimeout(async () => {
         const rawS = await client.redis.get(battleKey);
         if (rawS) {
           const s = deserializeBattle(rawS);
           if (s && s.status !== 'finished') {
             await client.redis.del([battleKey, myLockKey, opponentLockKey]);
-            await msg.edit({ embeds: [new EmbedBuilder().setColor(0x808080).setTitle('⏰ Battle Timed Out')], components: [] }).catch(() => {});
+            await msg.edit({ embeds: [new EmbedBuilder().setColor(0x808080).setTitle('⏰ Battle Timed Out').setDescription('Battle expired due to inactivity.')], components: [] }).catch(() => {});
           }
         }
       }, 300000);
@@ -202,8 +220,8 @@ const command: Command = {
             attacker.currentHp = Math.max(0, attacker.currentHp - dotResult.damage);
             currentState.battleLog.push(dotResult.message);
             if (checkFainted(attacker)) {
-              // Attacker fainted from status before moving — end turn
               attackerTeam[attackerIdx].currentHp = 0;
+              currentState.battleLog.push(`💀 ${attacker.name} fainted from status damage!`);
               const allFainted = attackerTeam.every((p) => p.currentHp <= 0);
               if (allFainted) {
                 currentState.status = 'finished';
@@ -213,13 +231,11 @@ const command: Command = {
                 await saveBattleResult(client, currentState, winnerId);
                 const winnerName = winnerId === currentState.challengerId ? challengerName : opponentName;
                 await moveBtn.update({
-                  embeds: [new EmbedBuilder().setColor(0xffd700).setTitle('🏆 Battle Ended!')
-                    .setDescription(`**${winnerName}** wins!\n\n${currentState.battleLog.slice(-5).join('\n')}`)],
+                  embeds: [buildBattleEndEmbed(currentState, winnerName)],
                   components: [],
                 });
                 return;
               }
-              // Advance to next turn without move
               currentState.turn++;
               currentState.currentTurnUserId = advanceTurn(currentState, isChallenger);
               await client.redis.set(battleKey, serializeBattle(currentState), { EX: REDIS_TTLS.BATTLE });
@@ -259,18 +275,34 @@ const command: Command = {
           const { damage, effectiveness, isCrit } = calcDamage(attacker, defender, moveInfo, currentState.weather);
           defender.currentHp = Math.max(0, defender.currentHp - damage);
 
-          const effText = getEffectivenessText(effectiveness);
-          const critText = isCrit ? ' 💥 Critical hit!' : '';
-          currentState.battleLog.push(
-            `${attacker.name} used **${moveName}**! (${moveInfo.power > 0 ? `${damage} dmg` : 'no damage'})${critText}${effText ? ' ' + effText : ''}`
-          );
+          let logLine = `${attacker.name} used **${moveName}**!`;
+          if (damage > 0) {
+            logLine += ` (${damage} dmg`;
+            // Effectiveness message
+            if (effectiveness > 1) logLine += ` 💥 Super effective!`;
+            else if (effectiveness < 1 && effectiveness > 0) logLine += ` 🔽 Not very effective...`;
+            else if (effectiveness === 0) logLine += ` 💔 No effect!`;
+            // Crit message
+            if (isCrit) logLine += ` 💥 Critical hit!`;
+            logLine += `)`;
+          } else {
+            logLine += ` (no damage)`;
+          }
+          currentState.battleLog.push(logLine);
 
-          // 6. Status infliction from move type (MOVE_TABLE-based)
+          // 6. Status infliction from move type
           if (moveInfo.power > 0) {
             const inflicted = tryInflictStatus(moveInfo.type, moveInfo.category, defender);
             if (inflicted) {
               defender.statusEffect = inflicted;
-              currentState.battleLog.push(`${defender.name} was ${inflicted === 'paralysis' ? 'paralyzed' : inflicted + 'ed'}!`);
+              const statusNames: Record<string, string> = {
+                burn: 'burned 🔥',
+                poison: 'poisoned ☠️',
+                paralysis: 'paralyzed ⚡',
+                sleep: 'put to sleep 😴',
+                freeze: 'frozen 🧊',
+              };
+              currentState.battleLog.push(`⚡ ${defender.name} was ${statusNames[inflicted] ?? inflicted}!`);
             }
           }
 
@@ -280,6 +312,7 @@ const command: Command = {
           // Check faint
           if (checkFainted(defender)) {
             defenderTeam[defenderIdx].currentHp = 0;
+            currentState.battleLog.push(`💀 **${defender.name} fainted!**`);
             const allFainted = defenderTeam.every((p) => p.currentHp <= 0);
             if (allFainted) {
               currentState.status = 'finished';
@@ -289,8 +322,7 @@ const command: Command = {
               await saveBattleResult(client, currentState, winnerId);
               const winnerName = winnerId === currentState.challengerId ? challengerName : opponentName;
               await moveBtn.update({
-                embeds: [new EmbedBuilder().setColor(0xffd700).setTitle('🏆 Battle Ended!')
-                  .setDescription(`**${winnerName}** wins!\n\n${currentState.battleLog.slice(-5).join('\n')}`)],
+                embeds: [buildBattleEndEmbed(currentState, winnerName)],
                 components: [],
               });
               return;
@@ -298,13 +330,23 @@ const command: Command = {
             // Find next alive Pokemon
             if (isChallenger) {
               const nextIdx = defenderTeam.findIndex((p, i) => i > defenderIdx && p.currentHp > 0);
-              if (nextIdx !== -1) currentState.opponentActivePokemonIndex = nextIdx;
+              if (nextIdx !== -1) {
+                currentState.opponentActivePokemonIndex = nextIdx;
+                currentState.battleLog.push(`🔄 ${defenderTeam[nextIdx].name} switches in!`);
+              }
             } else {
               const nextIdx = defenderTeam.findIndex((p, i) => i > defenderIdx && p.currentHp > 0);
-              if (nextIdx !== -1) currentState.challengerActivePokemonIndex = nextIdx;
+              if (nextIdx !== -1) {
+                currentState.challengerActivePokemonIndex = nextIdx;
+                currentState.battleLog.push(`🔄 ${defenderTeam[nextIdx].name} switches in!`);
+              }
             }
-            // Recompute round leader after Pokémon swap
             recomputeRoundLeader(currentState);
+          }
+
+          // Trim battle log to last 8 entries to avoid embed overflow
+          if (currentState.battleLog.length > 8) {
+            currentState.battleLog = currentState.battleLog.slice(-8);
           }
 
           await client.redis.set(battleKey, serializeBattle(currentState), { EX: REDIS_TTLS.BATTLE });
@@ -358,10 +400,12 @@ function buildBattleEmbed(state: BattleState, challengerName: string, opponentNa
   const chStatus = statusLabel(ch?.statusEffect);
   const opStatus = statusLabel(op?.statusEffect);
 
+  const logDisplay = state.battleLog.slice(-5).join('\n') || 'Battle started!';
+
   return new EmbedBuilder()
     .setColor(0xff0000)
-    .setTitle('⚔️ Pokemon Battle!')
-    .setDescription(`**Turn ${state.turn}** — ${turnName}'s move\n\n${state.battleLog.slice(-4).join('\n') || 'Battle started!'}`)
+    .setTitle(`⚔️ Pokemon Battle! (Turn ${state.turn})`)
+    .setDescription(logDisplay)
     .addFields(
       {
         name: `${challengerName}'s ${ch?.name ?? '???'}${chStatus ? ` ${chStatus}` : ''}`,
@@ -374,7 +418,18 @@ function buildBattleEmbed(state: BattleState, challengerName: string, opponentNa
         inline: true,
       }
     )
-    .setFooter({ text: `${state.type} battle` });
+    .setFooter({ text: `${turnName}'s turn • ${state.type} battle` });
+}
+
+function buildBattleEndEmbed(state: BattleState, winnerName: string): EmbedBuilder {
+  return new EmbedBuilder()
+    .setColor(0xffd700)
+    .setTitle('🏆 Battle Ended!')
+    .setDescription(`**${winnerName}** wins in **${state.turn}** turns!\n\n${state.battleLog.slice(-5).join('\n')}`)
+    .addFields(
+      { name: '📊 Total Turns', value: `${state.turn}`, inline: true },
+      { name: '👑 Winner', value: winnerName, inline: true },
+    );
 }
 
 function buildBattleRow(state: BattleState): ActionRowBuilder<ButtonBuilder> {

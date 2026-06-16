@@ -16,12 +16,12 @@ const CATEGORIES = [
     'gadget_kit', 'hacking_tools', 'master_plan', 'improved_incubator', 'advanced_incubator', 'perfect_incubator'] },
 ];
 
-function formatGBP(priceGBP: number): string {
-  return `£${priceGBP.toFixed(2)}`;
+function formatGamePrice(price: number): string {
+  return `${price.toLocaleString()} PokéCoins`;
 }
 
 function formatBalance(balance: number): string {
-  return `£${(balance / 100).toFixed(2)}`;
+  return `${balance.toLocaleString()} PokéCoins`;
 }
 
 // ── UI Builders ──────────────────────────────────────────────────────────────
@@ -49,7 +49,7 @@ function itemMenuRow(catId: string, pricing: PricingService) {
       .addOptions(items.map((it) => ({
         label: `${it!.emoji} ${it!.name}`,
         value: it!.itemId,
-        description: `${formatGBP(it!.priceGBP)} — ${it!.description.slice(0, 50)}`,
+        description: `${formatGamePrice(it!.gamePrice)} — ${it!.description.slice(0, 50)}`,
       })))
   );
 }
@@ -100,7 +100,7 @@ function catEmbed(balance: number) {
 function itemsEmbed(catId: string, balance: number, pricing: PricingService) {
   const cat = CATEGORIES.find((c) => c.id === catId)!;
   const items = cat.ids.map((id) => pricing.getPrice(id)).filter(Boolean);
-  const lines = items.map((it) => `${it!.emoji} **${it!.name}** — ${formatGBP(it!.priceGBP)}\n${it!.description}`);
+  const lines = items.map((it) => `${it!.emoji} **${it!.name}** — ${formatGamePrice(it!.gamePrice)}\n${it!.description}`);
   return new EmbedBuilder()
     .setColor(0xffcb05)
     .setTitle(`🏪 ${cat.emoji} ${cat.label}`)
@@ -108,21 +108,20 @@ function itemsEmbed(catId: string, balance: number, pricing: PricingService) {
     .setFooter({ text: 'Select an item from the menu below' });
 }
 
-function buyEmbed(item: { itemId: string; name: string; priceGBP: number; emoji: string; description: string }, qty: number, balance: number) {
-  const totalGBP = item.priceGBP * qty;
-  const totalPence = Math.round(totalGBP * 100);
-  const canAfford = balance >= totalPence;
+function buyEmbed(item: { itemId: string; name: string; gamePrice: number; emoji: string; description: string }, qty: number, balance: number) {
+  const totalCost = item.gamePrice * qty;
+  const canAfford = balance >= totalCost;
   return new EmbedBuilder()
     .setColor(canAfford ? 0x00cc44 : 0xff4444)
     .setTitle(`${item.emoji} ${item.name}`)
     .setDescription(item.description)
     .addFields(
-      { name: '💰 Unit Price', value: formatGBP(item.priceGBP), inline: true },
+      { name: '💰 Unit Price', value: formatGamePrice(item.gamePrice), inline: true },
       { name: '🔢 Quantity',   value: `×${qty}`, inline: true },
-      { name: '🧾 Total',      value: formatGBP(totalGBP), inline: true },
+      { name: '🧾 Total',      value: formatGamePrice(totalCost), inline: true },
       { name: '💳 Balance',    value: `${formatBalance(balance)}${canAfford ? '' : ' ❌'}`, inline: true },
     )
-    .setFooter({ text: canAfford ? 'Pick a quantity then click Buy' : 'Not enough funds — try a smaller quantity' });
+    .setFooter({ text: canAfford ? 'Pick a quantity then click Buy' : 'Not enough PokéCoins — try a smaller quantity' });
 }
 
 // ── Shared handler (used by both /shop and /buy) ──────────────────────────────
@@ -135,7 +134,7 @@ export async function openShop(interaction: ChatInputCommandInteraction, client:
 
     let balance = (await client.prisma.user.findUnique({ where: { id: interaction.user.id } }))?.balance ?? 0;
     let currentCat: string | null = null;
-    let currentItem: { itemId: string; name: string; priceGBP: number; emoji: string; description: string } | null = null;
+    let currentItem: { itemId: string; name: string; gamePrice: number; emoji: string; description: string } | null = null;
     let currentQty = 1;
 
     const reply = await interaction.editReply({
@@ -172,7 +171,7 @@ export async function openShop(interaction: ChatInputCommandInteraction, client:
       if (i.isStringSelectMenu() && i.customId.startsWith('s_item:')) {
         currentCat = i.customId.split(':')[1];
         const priceData = pricing.getPrice(i.values[0]);
-        currentItem = priceData ? { itemId: priceData.itemId, name: priceData.name, priceGBP: priceData.priceGBP, emoji: priceData.emoji, description: priceData.description } : null;
+        currentItem = priceData ? { itemId: priceData.itemId, name: priceData.name, gamePrice: priceData.gamePrice, emoji: priceData.emoji, description: priceData.description } : null;
         currentQty = 1;
         if (!currentItem) return;
         balance = (await client.prisma.user.findUnique({ where: { id: interaction.user.id } }))?.balance ?? 0;
@@ -185,7 +184,7 @@ export async function openShop(interaction: ChatInputCommandInteraction, client:
         const [, itemId, qtyStr] = i.customId.split(':');
         currentQty = parseInt(qtyStr, 10);
         const priceData = pricing.getPrice(itemId);
-        if (priceData) currentItem = { itemId: priceData.itemId, name: priceData.name, priceGBP: priceData.priceGBP, emoji: priceData.emoji, description: priceData.description };
+        if (priceData) currentItem = { itemId: priceData.itemId, name: priceData.name, gamePrice: priceData.gamePrice, emoji: priceData.emoji, description: priceData.description };
         if (!currentItem || !currentCat) return;
         await interaction.editReply({ embeds: [buyEmbed(currentItem, currentQty, balance)], components: [qtyRow(currentItem.itemId, currentQty), actionRow(currentItem.itemId, currentQty, currentCat)] });
         return;
@@ -206,16 +205,15 @@ export async function openShop(interaction: ChatInputCommandInteraction, client:
         const priceData = pricing.getPrice(itemId);
         const qty = parseInt(qtyStr, 10);
         if (!priceData) return;
-        const totalGBP = priceData.priceGBP * qty;
-        const totalPence = Math.round(totalGBP * 100);
+        const totalCost = priceData.gamePrice * qty;
 
         try {
           await client.prisma.$transaction(async (tx) => {
             const u = await tx.user.findUnique({ where: { id: interaction.user.id } });
-            if (!u || u.balance < totalPence) throw new Error('INSUFFICIENT_FUNDS');
+            if (!u || u.balance < totalCost) throw new Error('INSUFFICIENT_FUNDS');
             await tx.user.update({
               where: { id: interaction.user.id },
-              data: { balance: { decrement: totalPence }, totalSpent: { increment: totalPence } },
+              data: { balance: { decrement: totalCost }, totalSpent: { increment: totalCost } },
             });
             await tx.userInventory.upsert({
               where: { userId_itemId: { userId: interaction.user.id, itemId: priceData.itemId } },
@@ -232,7 +230,7 @@ export async function openShop(interaction: ChatInputCommandInteraction, client:
               .setTitle('✅ Purchase Complete!')
               .setDescription(`You bought **${qty}× ${priceData.emoji} ${priceData.name}**!`)
               .addFields(
-                { name: '💰 Spent',   value: formatGBP(totalGBP), inline: true },
+                { name: '💰 Spent',   value: formatGamePrice(totalCost), inline: true },
                 { name: '💳 Balance', value: formatBalance(balance), inline: true },
               )
               .setFooter({ text: 'Select another category to keep shopping' })],
@@ -242,7 +240,7 @@ export async function openShop(interaction: ChatInputCommandInteraction, client:
           if (e.message === 'INSUFFICIENT_FUNDS') {
             balance = (await client.prisma.user.findUnique({ where: { id: interaction.user.id } }))?.balance ?? 0;
             await interaction.editReply({
-              embeds: [buyEmbed(currentItem ?? { itemId: priceData.itemId, name: priceData.name, priceGBP: priceData.priceGBP, emoji: priceData.emoji, description: priceData.description }, qty, balance)],
+              embeds: [buyEmbed(currentItem ?? { itemId: priceData.itemId, name: priceData.name, gamePrice: priceData.gamePrice, emoji: priceData.emoji, description: priceData.description }, qty, balance)],
               components: [qtyRow(priceData.itemId, qty), actionRow(priceData.itemId, qty, currentCat ?? 'balls')],
             });
           }
@@ -260,7 +258,7 @@ export async function openShop(interaction: ChatInputCommandInteraction, client:
 const command: Command = {
   data: new SlashCommandBuilder()
     .setName('shop')
-    .setDescription('Browse and buy items from the PokéMart — prices in GBP (£)'),
+    .setDescription('Browse and buy items from the PokéMart'),
   async execute(interaction: ChatInputCommandInteraction, client: BotClient) {
     return openShop(interaction, client);
   },

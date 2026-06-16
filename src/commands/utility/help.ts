@@ -18,13 +18,13 @@ const command: Command = {
   async execute(interaction: ChatInputCommandInteraction, _client: BotClient) {
     const category = interaction.options.getString('category');
     const categories: Record<string, { commands: string[]; emoji: string; description: string }> = {
-      pokemon: { emoji: '🎮', description: 'Pokemon collection and management', commands: ['/pokemon', '/pokedex', '/catch', '/box', '/team', '/trade', '/favorite', '/release'] },
-      economy: { emoji: '💰', description: 'Economy and earning GBP (£)', commands: ['/balance', '/daily', '/weekly', '/hunt', '/beg', '/rob', '/rocket', '/fish', '/mine', '/ranger', '/researcher', '/deposit', '/withdraw', '/shop'] },
-      cards: { emoji: '🃏', description: 'Pokemon card collection', commands: ['/pack', '/card', '/collection'] },
-      battles: { emoji: '⚔️', description: 'Pokemon battles', commands: ['/battle'] },
-      social: { emoji: '👥', description: 'Profile and community features', commands: ['/profile', '/leaderboard', '/achievements', '/quests'] },
+      pokemon: { emoji: '🎮', description: 'Pokémon collection and management', commands: ['/pokedex', '/box', '/team', '/catch', '/evolve', '/trade', '/favorite', '/nickname', '/release', '/pokemon'] },
+      economy: { emoji: '💰', description: 'Economy and earning PokéCoins', commands: ['/balance', '/daily', '/weekly', '/beg', '/fish', '/mine', '/ranger', '/researcher', '/rocket', '/rob', '/shop', '/inventory', '/pay', '/bank', '/rewards', '/career'] },
+      cards: { emoji: '🃏', description: 'Pokémon card collection', commands: ['/pack', '/card', '/collection', '/giftpack'] },
+      battles: { emoji: '⚔️', description: 'Pokémon battles', commands: ['/battle', '/battlehistory'] },
+      social: { emoji: '👥', description: 'Profile and community features', commands: ['/profile', '/leaderboard', '/achievements', '/quests', '/creator', '/inspector'] },
       moderation: { emoji: '🔨', description: 'Server moderation (Mods only)', commands: ['/ban', '/kick', '/warn', '/timeout', '/warnings', '/purge', '/lock', '/unlock', '/slowmode'] },
-      utility: { emoji: '🔧', description: 'Utility commands', commands: ['/ping', '/help', '/setup', '/welcome', '/giveaway', '/config'] },
+      utility: { emoji: '🔧', description: 'Utility commands', commands: ['/help', '/ping', '/setup', '/welcome', '/giveaway', '/config', '/invite'] },
     };
 
     if (category && categories[category]) {
@@ -38,7 +38,7 @@ const command: Command = {
     } else {
       const embed = new EmbedBuilder()
         .setColor(0xffcb05)
-        .setTitle('📖 Pokemon Master Help')
+        .setTitle('📖 Pokémon Master Help')
         .setDescription('Use `/help <category>` for detailed command info!')
         .addFields(
           ...Object.entries(categories).map(([name, cat]) => ({
@@ -47,7 +47,7 @@ const command: Command = {
             inline: true,
           }))
         )
-        .setFooter({ text: 'Pokemon Master Bot v1.0.0' });
+        .setFooter({ text: 'Pokémon Master Bot v1.0.0' });
       await interaction.reply({ embeds: [embed], ephemeral: true });
     }
   },

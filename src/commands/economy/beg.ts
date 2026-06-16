@@ -44,7 +44,6 @@ const command: Command = {
 
     const res = RESPONSES[Math.floor(Math.random() * RESPONSES.length)];
         const amount = res.min > 0 ? Math.floor(Math.random() * (res.max - res.min) + res.min) : 0;
-        const gbpAmount = (amount / 100);
 
     // 3% chance a trainer gifts you a common Pokemon
     const giftPokemon = Math.random() < 0.03;
@@ -100,7 +99,7 @@ const command: Command = {
       .setDescription(
         [
           res.msg,
-          amount > 0 ? `\n+**£${gbpAmount.toFixed(2)}**` : '',
+          amount > 0 ? `\n+**${amount.toLocaleString()} PokéCoins**` : '',
           giftedPokemonName ? `\n🎁 A passing trainer gave you a **${giftedPokemonName}**!` : '',
         ].join('')
       )

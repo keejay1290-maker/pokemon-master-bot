@@ -21,7 +21,7 @@ const FISH_TABLE = [
 const command: Command = {
   data: new SlashCommandBuilder()
     .setName('fish')
-    .setDescription(`${CAREER_EMOJI} Cast your line and see what bites! Earn £GBP`),
+    .setDescription(`${CAREER_EMOJI} Cast your line and see what bites! Earn PokéCoins`),
 
   async execute(interaction: ChatInputCommandInteraction, client: BotClient) {
     const cooldownService = new CooldownService(client);
@@ -84,7 +84,7 @@ const command: Command = {
     const embed = new EmbedBuilder()
       .setColor(0x3498db)
       .setTitle(`${CAREER_EMOJI} ${CAREER_NAME} — ${result.emoji} ${result.name}`)
-      .setDescription(`**+£${(reward / 100).toFixed(2)}**`)
+      .setDescription(`**+${reward.toLocaleString()} PokéCoins**`)
       .addFields(
         { name: '📊 Career Level', value: `${jobLevel}${leveledUp ? ' → **Level Up!** 🎉' : ''}`, inline: true },
         { name: '⭐ Trainer XP', value: `+${xpGain} XP`, inline: true },

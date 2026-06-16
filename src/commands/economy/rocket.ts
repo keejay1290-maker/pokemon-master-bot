@@ -17,7 +17,7 @@ const ROCKET_TABLE = [
 const command: Command = {
   data: new SlashCommandBuilder()
     .setName('rocket')
-    .setDescription('🚀 High-risk, high-reward criminal operations! Earn £GBP'),
+    .setDescription('🚀 High-risk, high-reward criminal operations! Earn PokéCoins'),
 
   async execute(interaction: ChatInputCommandInteraction, client: BotClient) {
     const cooldownService = new CooldownService(client);
@@ -52,7 +52,7 @@ const command: Command = {
     const embed = new EmbedBuilder()
       .setColor(0xe74c3c)
       .setTitle(`🚀 Rocket — ${result.emoji} ${result.name}`)
-      .setDescription(`**+£${(reward / 100).toFixed(2)}**`)
+      .setDescription(`**+${reward.toLocaleString()} PokéCoins**`)
       .addFields(
         { name: '📊 Career Level', value: `${jobLevel}${leveledUp ? ' → **Level Up!** 🎉' : ''}`, inline: true },
         { name: '⭐ Trainer XP', value: `+${xpGain} XP`, inline: true },

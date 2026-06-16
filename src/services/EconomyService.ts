@@ -3,6 +3,7 @@ import type { BotClient } from '../types/index.js';
 /**
  * Shared economy service for all financial transactions.
  * All economy operations should go through this service.
+ * Currency: PokéCoins (integer amounts)
  */
 export class EconomyService {
   private client: BotClient;
@@ -12,7 +13,7 @@ export class EconomyService {
   }
 
   /**
-   * Get a user's balance
+   * Get a user's balance in PokéCoins
    */
   async getBalance(userId: string): Promise<number> {
     const user = await this.client.prisma.user.findUnique({ where: { id: userId } });
@@ -20,7 +21,7 @@ export class EconomyService {
   }
 
   /**
-   * Add funds to a user's balance
+   * Add PokéCoins to a user's balance
    */
   async addBalance(userId: string, amount: number): Promise<number> {
     const user = await this.client.prisma.user.update({
@@ -31,7 +32,7 @@ export class EconomyService {
   }
 
   /**
-   * Remove funds from a user's balance
+   * Remove PokéCoins from a user's balance
    */
   async removeBalance(userId: string, amount: number): Promise<{ success: boolean; balance: number }> {
     const user = await this.client.prisma.user.findUnique({ where: { id: userId } });
@@ -46,7 +47,7 @@ export class EconomyService {
   }
 
   /**
-   * Transfer funds between users
+   * Transfer PokéCoins between users
    */
   async transferBalance(fromUserId: string, toUserId: string, amount: number): Promise<boolean> {
     try {
@@ -70,16 +71,16 @@ export class EconomyService {
   }
 
   /**
-   * Format GBP amount
+   * Format a PokéCoin amount for display
    */
-  static formatGBP(amount: number): string {
-    return `£${(amount / 100).toFixed(2)}`;
+  static formatCoins(amount: number): string {
+    return `${amount.toLocaleString()} PokéCoins`;
   }
 
   /**
    * Format a number for display (backwards compatible)
    */
   static formatNumber(amount: number): string {
-    return `£${(amount / 100).toFixed(2)}`;
+    return amount.toLocaleString();
   }
 }
