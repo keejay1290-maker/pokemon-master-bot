@@ -81,19 +81,29 @@ async function buildSummary(
   username: string,
   avatarUrl: string,
 ) {
-  const [caughtIds, totalPokemon, rarities, favoriteCount, teamCount, recentCatch] = await Promise.all([
+  const [caughtIds, totalPokemon, rarities, favoriteCount, teamCount, recentCatch, user] = await Promise.all([
     client.prisma.userPokemon.findMany({ where: { userId }, select: { pokemonId: true }, distinct: ['pokemonId'] }),
     client.prisma.pokemon.count(),
     client.prisma.userPokemon.findMany({ where: { userId }, include: { pokemon: { select: { rarity: true } } }, distinct: ['pokemonId'] }),
     client.prisma.userPokemon.count({ where: { userId, isFavorite: true } }),
     client.prisma.userPokemon.count({ where: { userId, isInTeam: true } }),
     client.prisma.userPokemon.findFirst({ where: { userId }, include: { pokemon: true }, orderBy: { caughtAt: 'desc' } }),
+    client.prisma.user.findUnique({ where: { id: userId }, select: { battlesWon: true, battlesLost: true, totalEarned: true, totalSpent: true, trainerLevel: true } }),
   ]);
 
   const caughtCount = caughtIds.length;
   const percent = totalPokemon > 0 ? ((caughtCount / totalPokemon) * 100).toFixed(1) : '0';
   const rarityCounts: Record<string, number> = {};
   for (const r of rarities) rarityCounts[r.pokemon.rarity] = (rarityCounts[r.pokemon.rarity] ?? 0) + 1;
+
+  // Estimate collection value using rarity-based pricing
+  const rarityValues: Record<string, number> = {
+    'Common': 2, 'Uncommon': 5, 'Rare': 15, 'Epic': 50,
+    'Legendary': 200, 'Mythical': 500, 'Ultra Beast': 100, 'Paradox': 75,
+  };
+  const totalValue = Object.entries(rarityCounts).reduce((sum, [rarity, count]) => {
+    return sum + (rarityValues[rarity] ?? 1) * count;
+  }, 0);
 
   const fillBars = Math.round((caughtCount / Math.max(totalPokemon, 1)) * 20);
   const pBar = '█'.repeat(fillBars) + '░'.repeat(20 - fillBars);
@@ -112,7 +122,10 @@ async function buildSummary(
       { name: '🔴 Mythical',  value: `${rarityCounts['Mythical']  ?? 0}`, inline: true },
       { name: '❤️ Favorites', value: `${favoriteCount}`, inline: true },
       { name: '⚔️ Team Size', value: `${teamCount}/6`, inline: true },
-      { name: '📊 Total Caught', value: `${caughtCount} unique`, inline: true },
+      { name: '🏆 Total Value', value: `£${totalValue}`, inline: true },
+    )
+    .addFields(
+      { name: '📊 Battle Record', value: `Won: ${user?.battlesWon ?? 0} | Lost: ${user?.battlesLost ?? 0}`, inline: false },
     )
     .setTimestamp();
 
