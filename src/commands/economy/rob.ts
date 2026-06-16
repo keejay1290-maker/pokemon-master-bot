@@ -1,7 +1,6 @@
 import { SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder } from 'discord.js';
 import type { BotClient, Command } from '../../types/index.js';
-import { formatNumber, formatDuration } from '../../utils/embeds.js';
-import { checkCooldown, setCooldown } from '../../utils/cooldown.js';
+import { CooldownService } from '../../services/CooldownService.js';
 
 const command: Command = {
   data: new SlashCommandBuilder()
@@ -26,10 +25,10 @@ const command: Command = {
       return;
     }
 
-    const cooldownSecs = guild?.robCooldown ?? 86400;
-    const { onCooldown, remaining } = await checkCooldown(client, interaction.user.id, 'rob', cooldownSecs);
+    const cooldownService = new CooldownService(client);
+    const { onCooldown, remaining } = await cooldownService.checkCareer(interaction.user.id);
     if (onCooldown) {
-      await interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('⏰ Cooldown').setDescription(`You need to lay low for **${formatDuration(remaining!)}** before robbing again.`)], ephemeral: true });
+      await interaction.reply({ embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('⏰ Career Cooldown').setDescription(`All careers are on cooldown. Come back in **${CooldownService.formatDuration(remaining!)}**.`)], ephemeral: true });
       return;
     }
 
@@ -55,7 +54,7 @@ const command: Command = {
       }
     }
 
-    await setCooldown(client, interaction.user.id, 'rob', cooldownSecs);
+    await cooldownService.setCareer(interaction.user.id, 86400);
 
     const successRate = guild?.robSuccessRate ?? 0.4;
     const success = Math.random() < successRate;
@@ -78,7 +77,7 @@ const command: Command = {
             await tx.user.update({ where: { id: target.id }, data: { balance: { decrement: stolen }, lastRobbed: new Date() } });
           }
           resultEmbed = new EmbedBuilder().setColor(0x00ff00).setTitle('🦹 Robbery Successful!')
-            .setDescription(`You sneaked into ${target.username}'s bag and stole **${formatNumber(stolen)} PokéCoins**!`).setTimestamp();
+            .setDescription(`You sneaked into ${target.username}'s bag and stole **£${(stolen / 100).toFixed(2)}**!`).setTimestamp();
         } else {
           const fine = Math.min(Math.floor(currentRobber.balance * 0.15), 500);
           if (fine > 0) {
@@ -86,7 +85,7 @@ const command: Command = {
             await tx.user.update({ where: { id: target.id }, data: { balance: { increment: fine } } });
           }
           resultEmbed = new EmbedBuilder().setColor(0xff4444).setTitle('🚨 Caught!')
-            .setDescription(`You were caught trying to rob ${target.username}! You paid a **${formatNumber(fine)} PokéCoin** fine.`).setTimestamp();
+            .setDescription(`You were caught trying to rob ${target.username}! You paid a **£${(fine / 100).toFixed(2)}** fine.`).setTimestamp();
         }
       });
       await interaction.reply({ embeds: [resultEmbed!] });

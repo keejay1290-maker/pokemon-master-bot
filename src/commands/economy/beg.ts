@@ -1,20 +1,19 @@
 import { SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder } from 'discord.js';
 import type { BotClient, Command } from '../../types/index.js';
-import { formatNumber, formatDuration } from '../../utils/embeds.js';
-import { checkCooldown, setCooldown } from '../../utils/cooldown.js';
+import { CooldownService } from '../../services/CooldownService.js';
 import { addXp } from '../../services/userService.js';
 
-const COOLDOWN = 600;
+const COOLDOWN = 3600;
 
 const RESPONSES = [
-  { msg: 'A kind trainer tossed you some coins!',              min: 50,  max: 150 },
-  { msg: 'You found a coin on the ground!',                    min: 10,  max: 50  },
+  { msg: 'A kind trainer tossed you some change!',             min: 50,  max: 150 },
+  { msg: 'You found some cash on the ground!',                 min: 10,  max: 50  },
   { msg: 'Nurse Joy felt sorry for you.',                      min: 100, max: 300 },
   { msg: 'The Gym Leader ignored you...',                      min: 0,   max: 0   },
-  { msg: 'A wealthy Collector donated PokéCoins!',             min: 200, max: 500 },
+  { msg: 'A wealthy Collector donated some cash!',             min: 200, max: 500 },
   { msg: 'Professor Grim tossed you some research grant money.',        min: 150, max: 400 },
   { msg: 'A passing trainer gave you their spare change.',     min: 75,  max: 200 },
-  { msg: 'You tripped over a hidden cache of PokéCoins!',     min: 300, max: 700 },
+  { msg: 'You found some money hidden in a bush!',             min: 300, max: 700 },
 ];
 
 // Small chance of a common Pokemon being gifted by a passerby
@@ -31,19 +30,21 @@ const command: Command = {
   data: new SlashCommandBuilder().setName('beg').setDescription('Beg for PokéCoins — or maybe a Pokémon!'),
 
   async execute(interaction: ChatInputCommandInteraction, client: BotClient) {
-    const { onCooldown, remaining } = await checkCooldown(client, interaction.user.id, 'beg', COOLDOWN);
+    const cooldownService = new CooldownService(client);
+    const { onCooldown, remaining } = await cooldownService.checkCareer(interaction.user.id);
     if (onCooldown) {
       await interaction.reply({
-        embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('⏰ Cooldown').setDescription(`Beg again in **${formatDuration(remaining!)}**.`)],
+        embeds: [new EmbedBuilder().setColor(0xff4444).setTitle('⏰ Career Cooldown').setDescription(`All careers are on cooldown. Come back in **${CooldownService.formatDuration(remaining!)}**.`)],
         ephemeral: true,
       });
       return;
     }
 
-    await setCooldown(client, interaction.user.id, 'beg', COOLDOWN);
+    await cooldownService.setCareer(interaction.user.id, COOLDOWN);
 
     const res = RESPONSES[Math.floor(Math.random() * RESPONSES.length)];
-    const amount = res.min > 0 ? Math.floor(Math.random() * (res.max - res.min) + res.min) : 0;
+        const amount = res.min > 0 ? Math.floor(Math.random() * (res.max - res.min) + res.min) : 0;
+        const gbpAmount = (amount / 100);
 
     // 3% chance a trainer gifts you a common Pokemon
     const giftPokemon = Math.random() < 0.03;
@@ -99,7 +100,7 @@ const command: Command = {
       .setDescription(
         [
           res.msg,
-          amount > 0 ? `\n+**${formatNumber(amount)} PokéCoins**` : '',
+          amount > 0 ? `\n+**£${gbpAmount.toFixed(2)}**` : '',
           giftedPokemonName ? `\n🎁 A passing trainer gave you a **${giftedPokemonName}**!` : '',
         ].join('')
       )

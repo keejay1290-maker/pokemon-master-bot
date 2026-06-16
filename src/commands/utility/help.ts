@@ -19,7 +19,7 @@ const command: Command = {
     const category = interaction.options.getString('category');
     const categories: Record<string, { commands: string[]; emoji: string; description: string }> = {
       pokemon: { emoji: '🎮', description: 'Pokemon collection and management', commands: ['/pokemon', '/pokedex', '/catch', '/box', '/team', '/trade', '/favorite', '/release'] },
-      economy: { emoji: '💰', description: 'Economy and earning PokéCoins', commands: ['/balance', '/daily', '/weekly', '/work', '/fish', '/hunt', '/beg', '/rob', '/deposit', '/withdraw', '/shop'] },
+      economy: { emoji: '💰', description: 'Economy and earning GBP (£)', commands: ['/balance', '/daily', '/weekly', '/hunt', '/beg', '/rob', '/rocket', '/fish', '/mine', '/ranger', '/researcher', '/deposit', '/withdraw', '/shop'] },
       cards: { emoji: '🃏', description: 'Pokemon card collection', commands: ['/pack', '/card', '/collection'] },
       battles: { emoji: '⚔️', description: 'Pokemon battles', commands: ['/battle'] },
       social: { emoji: '👥', description: 'Profile and community features', commands: ['/profile', '/leaderboard', '/achievements', '/quests'] },
