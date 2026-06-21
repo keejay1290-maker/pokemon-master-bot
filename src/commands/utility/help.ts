@@ -18,7 +18,7 @@ const command: Command = {
   async execute(interaction: ChatInputCommandInteraction, _client: BotClient) {
     const category = interaction.options.getString('category');
     const categories: Record<string, { commands: string[]; emoji: string; description: string }> = {
-      pokemon: { emoji: '🎮', description: 'Pokémon collection and management', commands: ['/pokedex', '/box', '/team', '/catch', '/evolve', '/gift pokemon', '/trade', '/favorite', '/nickname', '/release', '/pokemon'] },
+      pokemon: { emoji: '🎮', description: 'Pokémon collection and management', commands: ['/pokedex', '/box', '/team', '/catch', '/evolve', '/gift pokemon pokedex', '/gift pokemon collection', '/protect', '/trade', '/favorite', '/nickname', '/release', '/pokemon'] },
       economy: { emoji: '💰', description: 'Economy and earning PokéCoins', commands: ['/balance', '/daily', '/weekly', '/beg', '/work', '/rob', '/shop', '/inventory', '/pay', '/bank', '/rewards', '/career'] },
       cards: { emoji: '🃏', description: 'Pokémon card collection', commands: ['/pack', '/card', '/collection', '/giftpack'] },
       battles: { emoji: '⚔️', description: 'Pokémon battles', commands: ['/battle', '/battlehistory'] },

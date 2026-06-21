@@ -299,6 +299,7 @@ model UserPokemon {
   xp          Int       @default(0)
   isShiny     Boolean   @default(false)
   isFavorite  Boolean   @default(false)
+  isLocked    Boolean   @default(false)
   isInTeam    Boolean   @default(false)
   teamSlot    Int?
 

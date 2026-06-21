@@ -40,6 +40,16 @@ export async function transferPokemonGift(
       if (!owned) throw new Error('GIFT_NOT_OWNED');
       if (owned.isInTeam) throw new Error('GIFT_IN_TEAM');
       if (owned.isFavorite) throw new Error('GIFT_FAVORITE');
+      if (owned.isLocked) throw new Error('GIFT_LOCKED');
+
+      const activeBattle = await tx.battle.findFirst({
+        where: {
+          status: 'active',
+          OR: [{ challengerId: senderId }, { opponentId: senderId }],
+        },
+        select: { id: true },
+      });
+      if (activeBattle) throw new Error('GIFT_IN_BATTLE');
 
       const activeListing = await tx.marketListing.findFirst({
         where: {
@@ -56,6 +66,7 @@ export async function transferPokemonGift(
           userId: senderId,
           isInTeam: false,
           isFavorite: false,
+          isLocked: false,
         },
         data: { userId: recipientId },
       });

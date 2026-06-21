@@ -24,11 +24,13 @@ describe('Pokémon gifting', () => {
           isShiny: false,
           isInTeam: false,
           isFavorite: false,
+          isLocked: false,
           pokemon: { nameDisplay: 'Pikachu', rarity: 'Rare' },
         }),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       marketListing: { findFirst: jest.fn().mockResolvedValue(null) },
+      battle: { findFirst: jest.fn().mockResolvedValue(null) },
       auditLog: { create: jest.fn().mockResolvedValue(undefined) },
     };
     const prisma = {
@@ -51,6 +53,67 @@ describe('Pokémon gifting', () => {
       data: expect.objectContaining({ action: 'GIFT_POKEMON', targetId: 'recipient-1' }),
     }));
     expect(result.name).toBe('Pikachu');
+  });
+
+  test.each([
+    ['favorite', { isFavorite: true, isLocked: false, isInTeam: false }, 'GIFT_FAVORITE'],
+    ['locked', { isFavorite: false, isLocked: true, isInTeam: false }, 'GIFT_LOCKED'],
+    ['team member', { isFavorite: false, isLocked: false, isInTeam: true }, 'GIFT_IN_TEAM'],
+  ])('blocks a protected caught Pokémon: %s', async (_label, protection, errorCode) => {
+    const tx = {
+      userPokemon: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'owned-pokemon',
+          pokemonId: 25,
+          nickname: null,
+          level: 12,
+          isShiny: false,
+          pokemon: { nameDisplay: 'Pikachu', rarity: 'Rare' },
+          ...protection,
+        }),
+      },
+    };
+    const prisma = {
+      $transaction: jest.fn(async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx)),
+    };
+
+    await expect(transferPokemonGift(
+      prisma as never,
+      'guild-1',
+      'sender-1',
+      'recipient-1',
+      { kind: 'caught', ownershipId: 'owned-pokemon' },
+    )).rejects.toThrow(errorCode);
+  });
+
+  test('blocks caught Pokémon gifts while the sender has an active battle', async () => {
+    const tx = {
+      userPokemon: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'owned-pokemon',
+          pokemonId: 25,
+          nickname: null,
+          level: 12,
+          isShiny: false,
+          isFavorite: false,
+          isLocked: false,
+          isInTeam: false,
+          pokemon: { nameDisplay: 'Pikachu', rarity: 'Rare' },
+        }),
+      },
+      battle: { findFirst: jest.fn().mockResolvedValue({ id: 'battle-1' }) },
+    };
+    const prisma = {
+      $transaction: jest.fn(async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx)),
+    };
+
+    await expect(transferPokemonGift(
+      prisma as never,
+      'guild-1',
+      'sender-1',
+      'recipient-1',
+      { kind: 'caught', ownershipId: 'owned-pokemon' },
+    )).rejects.toThrow('GIFT_IN_BATTLE');
   });
 
   test('moves one card copy and audits the transfer in the same transaction', async () => {
