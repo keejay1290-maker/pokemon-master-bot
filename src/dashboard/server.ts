@@ -16,10 +16,8 @@ export async function startDashboard(client: BotClient) {
   const isProduction = process.env.NODE_ENV === 'production';
   const requiredProductionEnv = [
     'DASHBOARD_SECRET',
-    'DASHBOARD_URL',
     'DISCORD_CLIENT_ID',
     'DISCORD_CLIENT_SECRET',
-    'DISCORD_CALLBACK_URL',
   ];
   const missingProductionEnv = requiredProductionEnv.filter((name) => !process.env[name]);
 
@@ -27,7 +25,11 @@ export async function startDashboard(client: BotClient) {
     throw new Error(`Missing required dashboard environment variables: ${missingProductionEnv.join(', ')}`);
   }
 
-  const dashboardUrl = process.env.DASHBOARD_URL ?? `http://localhost:${PORT}`;
+  const railwayPublicDomain = process.env.RAILWAY_PUBLIC_DOMAIN;
+  const dashboardUrl = process.env.DASHBOARD_URL ??
+    (railwayPublicDomain ? `https://${railwayPublicDomain}` : `http://localhost:${PORT}`);
+  const discordCallbackUrl = process.env.DISCORD_CALLBACK_URL ??
+    `${dashboardUrl}/auth/discord/callback`;
   const sessionSecret = process.env.DASHBOARD_SECRET ?? randomBytes(32).toString('hex');
 
   if (!process.env.DASHBOARD_SECRET) {
@@ -60,7 +62,7 @@ export async function startDashboard(client: BotClient) {
   passport.use(new DiscordStrategy({
     clientID: process.env.DISCORD_CLIENT_ID ?? '',
     clientSecret: process.env.DISCORD_CLIENT_SECRET ?? '',
-    callbackURL: process.env.DISCORD_CALLBACK_URL ?? 'http://localhost:3001/auth/discord/callback',
+    callbackURL: discordCallbackUrl,
     scope: ['identify', 'guilds'],
   }, (_accessToken, _refreshToken, profile, done) => {
     return done(null, profile);

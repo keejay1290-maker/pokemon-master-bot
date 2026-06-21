@@ -4,7 +4,8 @@ Date: 2026-06-21
 
 ## Implemented
 
-- Production startup now rejects missing dashboard session and Discord OAuth environment variables.
+- Production startup rejects missing dashboard session and Discord OAuth secrets.
+- Dashboard and OAuth callback URLs default to Railway's `RAILWAY_PUBLIC_DOMAIN` when explicit values are absent.
 - Development no longer uses a known fallback session secret; it generates an ephemeral secret and logs a warning.
 - Session cookies are HTTP-only, same-site, secure in production, and use a non-default cookie name.
 - Production enables Express proxy trust for secure cookies behind Railway or another reverse proxy.
