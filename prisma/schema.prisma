@@ -687,3 +687,18 @@ model PackSession {
   @@index([expiresAt])
   @@map("pack_sessions")
 }
+
+model EconomyLedger {
+  id         String   @id @default(cuid())
+  type       String
+  fromUserId String?
+  toUserId   String?
+  amount     Int
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([fromUserId, createdAt])
+  @@index([toUserId, createdAt])
+  @@index([type, createdAt])
+  @@map("economy_ledger")
+}

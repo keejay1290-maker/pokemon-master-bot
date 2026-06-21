@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import type { Prisma } from '@prisma/client';
 import { User as DiscordUser } from 'discord.js';
 
 export async function ensureUser(prisma: PrismaClient, user: DiscordUser) {
@@ -17,43 +18,78 @@ export async function getOrCreateUser(prisma: PrismaClient, userId: string) {
   return prisma.user.findUnique({ where: { id: userId } });
 }
 
-export async function addBalance(prisma: PrismaClient, userId: string, amount: number) {
+function validateCoinAmount(amount: number): void {
+  if (!Number.isSafeInteger(amount) || amount === 0) {
+    throw new Error('INVALID_AMOUNT');
+  }
+}
+
+export async function addBalance(
+  prisma: PrismaClient,
+  userId: string,
+  amount: number,
+  type = 'BALANCE_ADJUSTMENT',
+  metadata?: Prisma.InputJsonValue
+) {
+  validateCoinAmount(amount);
+
   if (amount < 0) {
     const absAmount = Math.abs(amount);
     return prisma.$transaction(async (tx) => {
-      const u = await tx.user.findUnique({ where: { id: userId } });
-      if (!u || u.balance < absAmount) throw new Error('INSUFFICIENT_FUNDS');
-      return tx.user.update({
-        where: { id: userId },
+      const debited = await tx.user.updateMany({
+        where: { id: userId, balance: { gte: absAmount } },
         data: {
           balance: { decrement: absAmount },
           totalSpent: { increment: absAmount },
         },
       });
-    });
-  } else {
-    return prisma.user.update({
-      where: { id: userId },
-      data: {
-        balance: { increment: amount },
-        totalEarned: amount > 0 ? { increment: amount } : undefined,
-      },
+      if (debited.count !== 1) throw new Error('INSUFFICIENT_FUNDS');
+
+      await tx.economyLedger.create({
+        data: { type, fromUserId: userId, amount: absAmount, metadata },
+      });
+      return tx.user.findUniqueOrThrow({ where: { id: userId } });
     });
   }
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.update({
+      where: { id: userId },
+      data: { balance: { increment: amount }, totalEarned: { increment: amount } },
+    });
+    await tx.economyLedger.create({
+      data: { type, toUserId: userId, amount, metadata },
+    });
+    return user;
+  });
 }
 
 export async function transferBalance(
   prisma: PrismaClient,
   fromId: string,
   toId: string,
-  amount: number
+  amount: number,
+  type = 'USER_TRANSFER',
+  metadata?: Prisma.InputJsonValue
 ) {
+  validateCoinAmount(amount);
+  if (amount < 0 || fromId === toId) throw new Error('INVALID_TRANSFER');
+
   return prisma.$transaction(async (tx) => {
-    const fromUser = await tx.user.findUnique({ where: { id: fromId } });
-    if (!fromUser || fromUser.balance < amount) throw new Error('INSUFFICIENT_FUNDS');
-    
-    await tx.user.update({ where: { id: fromId }, data: { balance: { decrement: amount }, totalSpent: { increment: amount } } });
-    return tx.user.update({ where: { id: toId }, data: { balance: { increment: amount }, totalEarned: { increment: amount } } });
+    const debited = await tx.user.updateMany({
+      where: { id: fromId, balance: { gte: amount } },
+      data: { balance: { decrement: amount }, totalSpent: { increment: amount } },
+    });
+    if (debited.count !== 1) throw new Error('INSUFFICIENT_FUNDS');
+
+    const recipient = await tx.user.update({
+      where: { id: toId },
+      data: { balance: { increment: amount }, totalEarned: { increment: amount } },
+    });
+    await tx.economyLedger.create({
+      data: { type, fromUserId: fromId, toUserId: toId, amount, metadata },
+    });
+    return recipient;
   });
 }
 

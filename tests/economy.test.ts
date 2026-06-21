@@ -1,3 +1,6 @@
+import { addBalance, transferBalance } from '../src/services/userService';
+import type { PrismaClient } from '@prisma/client';
+
 describe('Economy calculations', () => {
   test('streak bonus caps at 1000', () => {
     const streakBonus = (streak: number) => Math.min(streak * 50, 1000);
@@ -32,5 +35,17 @@ describe('Economy calculations', () => {
     expect(xpToNextLevel(5)).toBe(2500);
     expect(xpToNextLevel(10)).toBe(10000);
     expect(xpToNextLevel(10)).toBeGreaterThan(xpToNextLevel(9));
+  });
+
+  test('shared balance service rejects zero and unsafe amounts before database access', async () => {
+    const prisma = {} as PrismaClient;
+    await expect(addBalance(prisma, 'user', 0)).rejects.toThrow('INVALID_AMOUNT');
+    await expect(addBalance(prisma, 'user', Number.MAX_SAFE_INTEGER + 1)).rejects.toThrow('INVALID_AMOUNT');
+  });
+
+  test('shared transfer service rejects negative and self transfers before database access', async () => {
+    const prisma = {} as PrismaClient;
+    await expect(transferBalance(prisma, 'a', 'b', -1)).rejects.toThrow('INVALID_TRANSFER');
+    await expect(transferBalance(prisma, 'a', 'a', 10)).rejects.toThrow('INVALID_TRANSFER');
   });
 });

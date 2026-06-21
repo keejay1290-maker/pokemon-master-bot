@@ -1,4 +1,5 @@
 import type { BotClient } from '../types/index.js';
+import { addBalance, transferBalance } from './userService.js';
 
 /**
  * Shared economy service for all financial transactions.
@@ -24,10 +25,8 @@ export class EconomyService {
    * Add PokéCoins to a user's balance
    */
   async addBalance(userId: string, amount: number): Promise<number> {
-    const user = await this.client.prisma.user.update({
-      where: { id: userId },
-      data: { balance: { increment: amount }, totalEarned: { increment: amount } },
-    });
+    if (amount <= 0) throw new Error('INVALID_AMOUNT');
+    const user = await addBalance(this.client.prisma, userId, amount);
     return user.balance;
   }
 
@@ -35,15 +34,16 @@ export class EconomyService {
    * Remove PokéCoins from a user's balance
    */
   async removeBalance(userId: string, amount: number): Promise<{ success: boolean; balance: number }> {
-    const user = await this.client.prisma.user.findUnique({ where: { id: userId } });
-    if (!user || user.balance < amount) {
-      return { success: false, balance: user?.balance ?? 0 };
+    if (amount <= 0) return { success: false, balance: await this.getBalance(userId) };
+    try {
+      const user = await addBalance(this.client.prisma, userId, -amount);
+      return { success: true, balance: user.balance };
+    } catch (error) {
+      if (error instanceof Error && error.message === 'INSUFFICIENT_FUNDS') {
+        return { success: false, balance: await this.getBalance(userId) };
+      }
+      throw error;
     }
-    const updated = await this.client.prisma.user.update({
-      where: { id: userId },
-      data: { balance: { decrement: amount }, totalSpent: { increment: amount } },
-    });
-    return { success: true, balance: updated.balance };
   }
 
   /**
@@ -51,19 +51,7 @@ export class EconomyService {
    */
   async transferBalance(fromUserId: string, toUserId: string, amount: number): Promise<boolean> {
     try {
-      await this.client.prisma.$transaction(async (tx) => {
-        const from = await tx.user.findUnique({ where: { id: fromUserId } });
-        if (!from || from.balance < amount) throw new Error('INSUFFICIENT_FUNDS');
-
-        await tx.user.update({
-          where: { id: fromUserId },
-          data: { balance: { decrement: amount }, totalSpent: { increment: amount } },
-        });
-        await tx.user.update({
-          where: { id: toUserId },
-          data: { balance: { increment: amount }, totalEarned: { increment: amount } },
-        });
-      });
+      await transferBalance(this.client.prisma, fromUserId, toUserId, amount);
       return true;
     } catch {
       return false;
