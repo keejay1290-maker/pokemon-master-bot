@@ -2,6 +2,7 @@ import { ButtonInteraction, EmbedBuilder, ActionRowBuilder, ButtonBuilder, Butto
 import type { BotClient } from '../types/index.js';
 import { formatNumber } from '../utils/embeds.js';
 import { calculateMarketValue } from '../services/cardValueService.js';
+import type { Prisma } from '@prisma/client';
 
 // Generic card-back image used when a TCG API card has no artwork (Base Set era, promos, some SV trainers)
 const CARD_BACK_PLACEHOLDER_URL = 'https://images.pokemontcg.io/cardback.png';
@@ -187,31 +188,93 @@ function summaryButtons(userId: string, hasMorePacks: boolean) {
   return row;
 }
 
-// Called from interactionCreate for pack_reveal:* buttons
-export async function handlePackReveal(interaction: ButtonInteraction, client: BotClient, sessionId: string) {
-  if (!client.redis.isReady) {
-    await interaction.reply({ content: '❌ Pack reveal is temporarily unavailable (cache service offline). Please try again in a moment.', ephemeral: true });
-    return;
+const PACK_SESSION_TTL_SECONDS = 900;
+
+function packSessionRedisKey(sessionId: string): string {
+  return `pack:session:${sessionId}`;
+}
+
+function serializePackSession(session: PackSession): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(session)) as Prisma.InputJsonValue;
+}
+
+function parsePackSession(raw: unknown): PackSession | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const session = raw as Partial<PackSession>;
+  if (
+    typeof session.userId !== 'string' ||
+    typeof session.setName !== 'string' ||
+    typeof session.setId !== 'string' ||
+    !Array.isArray(session.cards) ||
+    typeof session.currentIndex !== 'number'
+  ) {
+    return null;
   }
 
-  const lockKey = `pack:lock:${sessionId}`;
-  const sessionKey = `pack:session:${sessionId}`;
+  return {
+    userId: session.userId,
+    setName: session.setName,
+    setId: session.setId,
+    setLogoUrl: session.setLogoUrl,
+    cards: session.cards as ResolvedCard[],
+    currentIndex: session.currentIndex,
+    newCardIds: Array.isArray(session.newCardIds) ? session.newCardIds : [],
+    dupCardIds: Array.isArray(session.dupCardIds) ? session.dupCardIds : [],
+    revealedCardIds: Array.isArray(session.revealedCardIds) ? session.revealedCardIds : [],
+  };
+}
 
-  // Atomic lock — prevents double-click race conditions
-  const locked = await client.redis.set(lockKey, '1', { NX: true, EX: 15 });
-  if (!locked) {
-    await interaction.reply({ content: '⏳ Already revealing, please wait...', ephemeral: true });
-    return;
+async function cachePackSession(client: BotClient, sessionId: string, session: PackSession): Promise<void> {
+  if (!client.redis?.isReady) return;
+  await client.redis.set(packSessionRedisKey(sessionId), JSON.stringify(session), { EX: PACK_SESSION_TTL_SECONDS }).catch(() => {});
+}
+
+async function deletePackSession(client: BotClient, sessionId: string): Promise<void> {
+  await client.prisma.packSession.delete({ where: { sessionId } }).catch(() => {});
+  if (client.redis?.isReady) await client.redis.del(packSessionRedisKey(sessionId)).catch(() => {});
+}
+
+async function getPackSession(client: BotClient, sessionId: string): Promise<PackSession | null> {
+  const dbSession = await client.prisma.packSession.findUnique({ where: { sessionId } });
+  if (!dbSession) return null;
+  if (dbSession.expiresAt.getTime() <= Date.now()) {
+    await deletePackSession(client, sessionId);
+    return null;
+  }
+
+  const session = parsePackSession(dbSession.cards);
+  if (!session) return null;
+
+  if (session.currentIndex !== dbSession.currentIndex) {
+    session.currentIndex = dbSession.currentIndex;
+  }
+
+  await cachePackSession(client, sessionId, session);
+  return session;
+}
+
+// Called from interactionCreate for pack_reveal:* buttons
+export async function handlePackReveal(interaction: ButtonInteraction, client: BotClient, sessionId: string) {
+  const lockKey = `pack:lock:${sessionId}`;
+
+  // Best-effort Redis lock. Postgres still enforces the canonical currentIndex
+  // transition below, so reveal stays safe when Redis is unavailable.
+  let lockAcquired = false;
+  if (client.redis?.isReady) {
+    const locked = await client.redis.set(lockKey, '1', { NX: true, EX: 15 }).catch(() => null);
+    if (!locked) {
+      await interaction.reply({ content: '⏳ Already revealing, please wait...', ephemeral: true });
+      return;
+    }
+    lockAcquired = true;
   }
 
   try {
-    const raw = await client.redis.get(sessionKey);
-    if (!raw) {
+    const session = await getPackSession(client, sessionId);
+    if (!session) {
       await interaction.update({ content: '❌ Session expired. Use `/pack open` to start again.', embeds: [], components: [] }).catch(() => {});
       return;
     }
-
-    const session: PackSession = JSON.parse(raw);
 
     // Ownership check
     if (interaction.user.id !== session.userId) {
@@ -233,46 +296,62 @@ export async function handlePackReveal(interaction: ButtonInteraction, client: B
     // Process reveal with internal error handling — if something fails (Discord context limit, Redis issue),
     // persist remaining cards and close the session to avoid leaving users stuck.
     try {
-      // Write this card to the user's collection NOW (one card per reveal)
-      await client.prisma.card.upsert({
-        where: { id: card.id },
-        update: { marketValue },
-        create: {
-          id: card.id,
-          name: card.name,
-          supertype: 'Pokémon',
-          subtypes: [],
-          types: [],
-          setId: session.setId,
-          setName: session.setName,
-          number: card.number,
-          rarity: card.rarity,
-          imageSmall: card.imageSmall ?? null,
-          imageLarge: card.imageLarge ?? null,
-          marketValue,
-        },
-      });
-
-      await client.prisma.userCard.upsert({
-        where: { userId_cardId_isFoil: { userId: session.userId, cardId: card.id, isFoil: false } },
-        update: { quantity: { increment: 1 } },
-        create: { userId: session.userId, cardId: card.id, quantity: 1, isFoil: false },
-      });
-
-      await client.prisma.user.update({
-        where: { id: session.userId },
-        data: { cardsCollected: { increment: 1 } },
-      });
-
       // Advance session state
       session.revealedCardIds.push(card.id);
       session.currentIndex += 1;
 
       const isLastCard = session.currentIndex >= session.cards.length;
 
+      // Write this card and advance the session in one transaction. The
+      // updateMany guard prevents duplicate card grants on double-clicks.
+      await client.prisma.$transaction(async (tx) => {
+        const advanced = await tx.packSession.updateMany({
+          where: { sessionId, currentIndex: cardNum - 1 },
+          data: {
+            currentIndex: session.currentIndex,
+            cards: serializePackSession(session),
+          },
+        });
+        if (advanced.count !== 1) throw new Error('PACK_ALREADY_ADVANCED');
+
+        await tx.card.upsert({
+          where: { id: card.id },
+          update: { marketValue },
+          create: {
+            id: card.id,
+            name: card.name,
+            supertype: 'Pokémon',
+            subtypes: card.subtypes ?? [],
+            types: card.types ?? [],
+            setId: session.setId,
+            setName: session.setName,
+            number: card.number,
+            rarity: card.rarity,
+            imageSmall: card.imageSmall ?? null,
+            imageLarge: card.imageLarge ?? null,
+            marketValue,
+          },
+        });
+
+        await tx.userCard.upsert({
+          where: { userId_cardId_isFoil: { userId: session.userId, cardId: card.id, isFoil: false } },
+          update: { quantity: { increment: 1 } },
+          create: { userId: session.userId, cardId: card.id, quantity: 1, isFoil: false },
+        });
+
+        await tx.user.update({
+          where: { id: session.userId },
+          data: { cardsCollected: { increment: 1 } },
+        });
+
+        if (isLastCard) {
+          await tx.packSession.delete({ where: { sessionId } });
+        }
+      });
+
       if (isLastCard) {
         // Delete session — pack is done
-        await client.redis.del(sessionKey).catch(() => {});
+        if (client.redis?.isReady) await client.redis.del(packSessionRedisKey(sessionId)).catch(() => {});
 
         // Check if user has more packs
         const hasMore = await client.prisma.userInventory.findFirst({
@@ -284,8 +363,8 @@ export async function handlePackReveal(interaction: ButtonInteraction, client: B
           components: [summaryButtons(session.userId, !!hasMore)],
         }).catch(() => {});
       } else {
-        // Update session in Redis
-        await client.redis.set(sessionKey, JSON.stringify(session), { EX: 900 }).catch(() => {});
+        // Update cache after the canonical DB transaction succeeds.
+        await cachePackSession(client, sessionId, session);
 
         const embed = buildRevealEmbed(session, card, cardNum);
         await interaction.update({
@@ -293,7 +372,12 @@ export async function handlePackReveal(interaction: ButtonInteraction, client: B
           components: [revealButton(sessionId)],
         }).catch(() => { throw new Error('UPDATE_FAILED'); });
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
+      if (err instanceof Error && err.message === 'PACK_ALREADY_ADVANCED') {
+        await interaction.reply({ content: '⏳ This card was already revealed. Please use the latest pack message.', ephemeral: true }).catch(() => {});
+        return;
+      }
+
       client.logger.error('Pack reveal processing error — falling back to close session', err);
 
       // Persist remaining cards (those not yet revealed) to the user's collection to avoid data loss
@@ -341,7 +425,7 @@ export async function handlePackReveal(interaction: ButtonInteraction, client: B
       }
 
       // Close the session
-      await client.redis.del(sessionKey).catch(() => {});
+      await deletePackSession(client, sessionId);
 
       // Notify user
       try {
@@ -352,12 +436,12 @@ export async function handlePackReveal(interaction: ButtonInteraction, client: B
     client.logger.error('Pack reveal outer error', err);
     if (!interaction.replied && !interaction.deferred) await interaction.reply({ content: '❌ An error occurred.', ephemeral: true }).catch(() => {});
   } finally {
-    await client.redis.del(lockKey).catch(() => {});
+    if (lockAcquired && client.redis?.isReady) await client.redis.del(lockKey).catch(() => {});
   }
 }
 
 // Called from interactionCreate for pack_open_another:* buttons
-export async function handlePackOpenAnother(interaction: ButtonInteraction, client: BotClient) {
+export async function handlePackOpenAnother(interaction: ButtonInteraction, _client: BotClient) {
   if (interaction.user.id !== interaction.customId.split(':')[1]) {
     await interaction.reply({ content: '❌ Not your session.', ephemeral: true });
     return;
@@ -370,7 +454,7 @@ export async function handlePackOpenAnother(interaction: ButtonInteraction, clie
 }
 
 // Called from interactionCreate for pack_view_collection:* buttons
-export async function handlePackViewCollection(interaction: ButtonInteraction, client: BotClient) {
+export async function handlePackViewCollection(interaction: ButtonInteraction, _client: BotClient) {
   if (interaction.user.id !== interaction.customId.split(':')[1]) {
     await interaction.reply({ content: '❌ Not your session.', ephemeral: true });
     return;
@@ -381,7 +465,8 @@ export async function handlePackViewCollection(interaction: ButtonInteraction, c
   });
 }
 
-// Creates a new pack session in Redis and returns the opening embed + button
+// Creates a new pack session in Postgres, caches it in Redis when available,
+// and returns the opening embed + button.
 export async function createPackSession(
   client: BotClient,
   userId: string,
@@ -391,10 +476,6 @@ export async function createPackSession(
   setLogoUrl: string | undefined,
   cards: ResolvedCard[]
 ): Promise<{ sessionId: string; embed: EmbedBuilder; row: ActionRowBuilder<ButtonBuilder> }> {
-  if (!client.redis.isReady) {
-    throw new Error('REDIS_UNAVAILABLE');
-  }
-
   const sessionId = `${userId}-${Date.now()}`;
 
   const session: PackSession = {
@@ -413,9 +494,24 @@ export async function createPackSession(
   try {
     const guild = guildId ? await client.prisma.guild.findUnique({ where: { id: guildId } }) : null;
     const cd = guild?.packCooldown ?? 60;
-    await client.redis.set(`cooldown:${userId}:pack`, (Date.now() + cd * 1000).toString(), { EX: cd });
+    if (client.redis?.isReady) {
+      await client.redis.set(`cooldown:${userId}:pack`, (Date.now() + cd * 1000).toString(), { EX: cd }).catch(() => {});
+    }
   } catch { /* non-fatal */ }
-  await client.redis.set(`pack:session:${sessionId}`, JSON.stringify(session), { EX: 900 });
+
+  await client.prisma.packSession.create({
+    data: {
+      sessionId,
+      userId,
+      guildId,
+      setId,
+      setName,
+      cards: serializePackSession(session),
+      currentIndex: 0,
+      expiresAt: new Date(Date.now() + PACK_SESSION_TTL_SECONDS * 1000),
+    },
+  });
+  await cachePackSession(client, sessionId, session);
 
   return {
     sessionId,

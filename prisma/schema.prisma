@@ -669,3 +669,21 @@ model Event {
 
   @@map("events")
 }
+
+model PackSession {
+  id          String   @id @default(cuid())
+  sessionId   String   @unique
+  userId      String
+  guildId     String?
+  setId       String
+  setName     String
+  cards       Json
+  currentIndex Int     @default(0)
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+  @@map("pack_sessions")
+}
