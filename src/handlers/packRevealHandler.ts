@@ -255,36 +255,27 @@ async function getPackSession(client: BotClient, sessionId: string): Promise<Pac
 
 // Called from interactionCreate for pack_reveal:* buttons
 export async function handlePackReveal(interaction: ButtonInteraction, client: BotClient, sessionId: string) {
-  const lockKey = `pack:lock:${sessionId}`;
-
-  // Best-effort Redis lock. Postgres still enforces the canonical currentIndex
-  // transition below, so reveal stays safe when Redis is unavailable.
-  let lockAcquired = false;
-  if (client.redis?.isReady) {
-    const locked = await client.redis.set(lockKey, '1', { NX: true, EX: 15 }).catch(() => null);
-    if (!locked) {
-      await interaction.reply({ content: '⏳ Already revealing, please wait...', ephemeral: true });
-      return;
-    }
-    lockAcquired = true;
-  }
+  // Acknowledge the click before any database/cache work. PostgreSQL's guarded
+  // currentIndex update below is the canonical reveal lock, so Redis must never
+  // be able to strand a valid pack behind a stale "already revealing" key.
+  await interaction.deferUpdate();
 
   try {
     const session = await getPackSession(client, sessionId);
     if (!session) {
-      await interaction.update({ content: '❌ Session expired. Use `/pack open` to start again.', embeds: [], components: [] }).catch(() => {});
+      await interaction.editReply({ content: '❌ Session expired. Use `/pack open` to start again.', embeds: [], components: [] }).catch(() => {});
       return;
     }
 
     // Ownership check
     if (interaction.user.id !== session.userId) {
-      await interaction.reply({ content: '❌ This is not your pack.', ephemeral: true }).catch(() => {});
+      await interaction.followUp({ content: '❌ This is not your pack.', ephemeral: true }).catch(() => {});
       return;
     }
 
     const card = session.cards[session.currentIndex];
     if (!card) {
-      await interaction.update({ content: '❌ Session corrupted.', embeds: [], components: [] }).catch(() => {});
+      await interaction.editReply({ content: '❌ Session corrupted.', embeds: [], components: [] }).catch(() => {});
       return;
     }
 
@@ -358,7 +349,7 @@ export async function handlePackReveal(interaction: ButtonInteraction, client: B
           where: { userId: session.userId, itemId: { startsWith: 'pack:' }, quantity: { gt: 0 } },
         });
 
-        await interaction.update({
+        await interaction.editReply({
           embeds: [buildSummaryEmbed(session)],
           components: [summaryButtons(session.userId, !!hasMore)],
         }).catch(() => {});
@@ -367,14 +358,14 @@ export async function handlePackReveal(interaction: ButtonInteraction, client: B
         await cachePackSession(client, sessionId, session);
 
         const embed = buildRevealEmbed(session, card, cardNum);
-        await interaction.update({
+        await interaction.editReply({
           embeds: [embed],
           components: [revealButton(sessionId)],
         }).catch(() => { throw new Error('UPDATE_FAILED'); });
       }
     } catch (err: unknown) {
       if (err instanceof Error && err.message === 'PACK_ALREADY_ADVANCED') {
-        await interaction.reply({ content: '⏳ This card was already revealed. Please use the latest pack message.', ephemeral: true }).catch(() => {});
+        await interaction.followUp({ content: '⏳ This card was already revealed. Please use the latest pack message.', ephemeral: true }).catch(() => {});
         return;
       }
 
@@ -434,9 +425,7 @@ export async function handlePackReveal(interaction: ButtonInteraction, client: B
     }
   } catch (err) {
     client.logger.error('Pack reveal outer error', err);
-    if (!interaction.replied && !interaction.deferred) await interaction.reply({ content: '❌ An error occurred.', ephemeral: true }).catch(() => {});
-  } finally {
-    if (lockAcquired && client.redis?.isReady) await client.redis.del(lockKey).catch(() => {});
+    await interaction.followUp({ content: '❌ An error occurred.', ephemeral: true }).catch(() => {});
   }
 }
 
@@ -511,6 +500,9 @@ export async function createPackSession(
       expiresAt: new Date(Date.now() + PACK_SESSION_TTL_SECONDS * 1000),
     },
   });
+  // Clean up locks left by older deployments. Current reveals rely on the
+  // PostgreSQL currentIndex compare-and-swap and do not create this key.
+  if (client.redis?.isReady) await client.redis.del(`pack:lock:${sessionId}`).catch(() => {});
   await cachePackSession(client, sessionId, session);
 
   return {
