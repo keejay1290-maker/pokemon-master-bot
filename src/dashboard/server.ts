@@ -1,5 +1,6 @@
 import express from 'express';
 import session from 'express-session';
+import RedisStore from 'connect-redis';
 import passport from 'passport';
 import { Strategy as DiscordStrategy } from 'passport-discord';
 import cors from 'cors';
@@ -9,6 +10,25 @@ import path from 'path';
 import { randomBytes } from 'crypto';
 import type { BotClient } from '../types/index.js';
 import { apiRouter } from './routes/api.js';
+
+const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const PRODUCTION_REDIS_READY_TIMEOUT_MS = 10_000;
+
+export function validateDashboardRedisConfig(isProduction: boolean, redisUrl: string | undefined) {
+  if (isProduction && !redisUrl) {
+    throw new Error('REDIS_URL is required for production dashboard sessions');
+  }
+}
+
+async function waitForRedisReady(client: BotClient, timeoutMs: number): Promise<boolean> {
+  if (client.redis.isReady) return true;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (client.redis.isReady) return true;
+  }
+  return false;
+}
 
 export async function startDashboard(client: BotClient) {
   const app = express();
@@ -24,6 +44,7 @@ export async function startDashboard(client: BotClient) {
   if (isProduction && missingProductionEnv.length > 0) {
     throw new Error(`Missing required dashboard environment variables: ${missingProductionEnv.join(', ')}`);
   }
+  validateDashboardRedisConfig(isProduction, process.env.REDIS_URL);
 
   const railwayPublicDomain = process.env.RAILWAY_PUBLIC_DOMAIN;
   const dashboardUrl = process.env.DASHBOARD_URL ??
@@ -38,6 +59,24 @@ export async function startDashboard(client: BotClient) {
 
   if (isProduction) app.set('trust proxy', 1);
 
+  const redisReady = isProduction
+    ? await waitForRedisReady(client, PRODUCTION_REDIS_READY_TIMEOUT_MS)
+    : client.redis.isReady;
+  if (isProduction && !redisReady) {
+    throw new Error('Redis did not become ready for production dashboard sessions');
+  }
+  const sessionStore = redisReady
+    ? new RedisStore({
+      client: client.redis,
+      prefix: 'pokemon-master:dashboard-session:',
+      ttl: Math.floor(SESSION_MAX_AGE_MS / 1000),
+      disableTouch: false,
+    })
+    : undefined;
+  if (!sessionStore) {
+    client.logger.warn('Redis unavailable; dashboard is using development-only in-memory sessions');
+  }
+
   app.get('/health', (_req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
   app.use(helmet());
@@ -49,13 +88,14 @@ export async function startDashboard(client: BotClient) {
   app.use(session({
     name: 'pokemon_master_session',
     secret: sessionSecret,
+    store: sessionStore,
     resave: false,
     saveUninitialized: false,
     cookie: {
       secure: isProduction,
       httpOnly: true,
       sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+      maxAge: SESSION_MAX_AGE_MS,
     },
   }));
 

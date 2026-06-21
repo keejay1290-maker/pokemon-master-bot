@@ -2,6 +2,7 @@ import {
   guildSettingsSchema,
   hasManageGuildPermission,
 } from '../src/dashboard/routes/api';
+import { validateDashboardRedisConfig } from '../src/dashboard/server';
 
 describe('Dashboard security', () => {
   test('accepts Manage Server and Administrator permission bits', () => {
@@ -30,5 +31,13 @@ describe('Dashboard security', () => {
     expect(guildSettingsSchema.safeParse({ shinyRate: 2 }).success).toBe(false);
     expect(guildSettingsSchema.safeParse({ spawnCooldown: 1 }).success).toBe(false);
     expect(guildSettingsSchema.safeParse({}).success).toBe(false);
+  });
+
+  test('requires Redis-backed sessions in production', () => {
+    expect(() => validateDashboardRedisConfig(true, undefined)).toThrow(
+      'REDIS_URL is required for production dashboard sessions',
+    );
+    expect(() => validateDashboardRedisConfig(true, 'redis://redis:6379')).not.toThrow();
+    expect(() => validateDashboardRedisConfig(false, undefined)).not.toThrow();
   });
 });
