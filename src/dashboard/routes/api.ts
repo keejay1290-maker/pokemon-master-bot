@@ -1,45 +1,105 @@
-import { Router, Request, Response } from 'express';
+import { NextFunction, Router, Request, Response } from 'express';
+import { z } from 'zod';
 import type { BotClient } from '../../types/index.js';
 
 export const apiRouter = Router();
+const MANAGE_GUILD = 1n << 5n;
+const ADMINISTRATOR = 1n << 3n;
+
+type DiscordGuild = { id: string; permissions: string };
+type DiscordProfile = { id: string; guilds?: DiscordGuild[] };
+type AsyncRoute = (req: Request, res: Response, next: NextFunction) => Promise<unknown>;
 
 function getClient(req: Request): BotClient {
   return (req as Request & { botClient: BotClient }).botClient;
 }
 
-function requireAuth(req: Request, res: Response, next: () => void) {
+function asyncRoute(handler: AsyncRoute) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    void handler(req, res, next).catch(next);
+  };
+}
+
+function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (!req.isAuthenticated()) return res.status(401).json({ error: 'Unauthorized' });
   next();
 }
 
-// Bot stats
-apiRouter.get('/stats', async (req: Request, res: Response) => {
-  const client = getClient(req);
+function canManageGuild(req: Request, guildId: string): boolean {
+  const user = req.user as DiscordProfile | undefined;
+  const guild = user?.guilds?.find((entry) => entry.id === guildId);
+  if (!guild) return false;
+
+  return hasManageGuildPermission(guild.permissions);
+}
+
+export function hasManageGuildPermission(rawPermissions: string): boolean {
   try {
-    const [totalUsers, totalGuilds, totalPokemon, totalBattles] = await Promise.all([
-      client.prisma.user.count(),
-      client.prisma.guild.count(),
-      client.prisma.userPokemon.count(),
-      client.prisma.battle.count(),
-    ]);
-    res.json({
-      guilds: client.guilds.cache.size,
-      users: totalUsers,
-      totalGuilds,
-      totalPokemon,
-      totalBattles,
-      uptime: process.uptime(),
-      ping: client.ws.ping,
-    });
-  } catch (err) {
-    res.status(500).json({ error: 'Internal server error' });
+    const permissions = BigInt(rawPermissions);
+    return (permissions & MANAGE_GUILD) === MANAGE_GUILD ||
+      (permissions & ADMINISTRATOR) === ADMINISTRATOR;
+  } catch {
+    return false;
   }
+}
+
+function requireGuildManager(req: Request, res: Response, next: NextFunction) {
+  if (!canManageGuild(req, req.params.guildId)) {
+    return res.status(403).json({ error: 'Missing Manage Server permission' });
+  }
+  next();
+}
+
+export const guildSettingsSchema = z.object({
+  dailyReward: z.number().int().min(0).max(1_000_000).optional(),
+  weeklyReward: z.number().int().min(0).max(5_000_000).optional(),
+  workCooldown: z.number().int().min(0).max(604_800).optional(),
+  fishCooldown: z.number().int().min(0).max(604_800).optional(),
+  huntCooldown: z.number().int().min(0).max(604_800).optional(),
+  spawnEnabled: z.boolean().optional(),
+  spawnCooldown: z.number().int().min(5).max(86_400).optional(),
+  shinyRate: z.number().min(0).max(1).optional(),
+  legendaryRate: z.number().min(0).max(1).optional(),
+  robEnabled: z.boolean().optional(),
+  robSuccessRate: z.number().min(0).max(1).optional(),
+  robCooldown: z.number().int().min(0).max(2_592_000).optional(),
+  robMaxLoss: z.number().int().min(0).max(10_000_000).optional(),
+  antiSpamEnabled: z.boolean().optional(),
+  scamDetectionEnabled: z.boolean().optional(),
+  antiRaidEnabled: z.boolean().optional(),
+  autoModEnabled: z.boolean().optional(),
+  welcomeEnabled: z.boolean().optional(),
+  welcomeMessage: z.string().trim().max(2_000).nullable().optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, {
+  message: 'At least one setting is required',
 });
 
-// Leaderboard
-apiRouter.get('/leaderboard', async (req: Request, res: Response) => {
+// Bot stats
+apiRouter.get('/stats', asyncRoute(async (req: Request, res: Response) => {
   const client = getClient(req);
-  const type = (req.query.type as string) ?? 'balance';
+  const [totalUsers, totalGuilds, totalPokemon, totalBattles] = await Promise.all([
+    client.prisma.user.count(),
+    client.prisma.guild.count(),
+    client.prisma.userPokemon.count(),
+    client.prisma.battle.count(),
+  ]);
+  res.json({
+    guilds: client.guilds.cache.size,
+    users: totalUsers,
+    totalGuilds,
+    totalPokemon,
+    totalBattles,
+    uptime: process.uptime(),
+    ping: client.ws.ping,
+  });
+}));
+
+// Leaderboard
+apiRouter.get('/leaderboard', asyncRoute(async (req: Request, res: Response) => {
+  const client = getClient(req);
+  const type = z.enum(['balance', 'pokemon', 'battles', 'ranked', 'level'])
+    .catch('balance')
+    .parse(req.query.type);
   const orderBy: Record<string, unknown> = {};
 
   switch (type) {
@@ -57,54 +117,40 @@ apiRouter.get('/leaderboard', async (req: Request, res: Response) => {
     select: { id: true, username: true, balance: true, pokemonCaught: true, battlesWon: true, rankedPoints: true, trainerLevel: true, shinyCaught: true, avatarUrl: true },
   });
   res.json(users);
-});
+}));
 
 // Guild info (auth required)
-apiRouter.get('/guild/:guildId', requireAuth, async (req: Request, res: Response) => {
+apiRouter.get('/guild/:guildId', requireAuth, requireGuildManager, asyncRoute(async (req: Request, res: Response) => {
   const client = getClient(req);
   const { guildId } = req.params;
-
-  const user = req.user as { id: string; guilds?: Array<{ id: string; permissions: string }> };
-  const userGuild = user.guilds?.find((g) => g.id === guildId);
-  if (!userGuild || !(parseInt(userGuild.permissions) & 0x20)) {
-    return res.status(403).json({ error: 'Missing permissions' });
-  }
 
   const guild = await client.prisma.guild.findUnique({ where: { id: guildId } });
   if (!guild) return res.status(404).json({ error: 'Guild not found' });
   res.json(guild);
-});
+}));
 
 // Update guild settings (auth required)
-apiRouter.patch('/guild/:guildId', requireAuth, async (req: Request, res: Response) => {
+apiRouter.patch('/guild/:guildId', requireAuth, requireGuildManager, asyncRoute(async (req: Request, res: Response) => {
   const client = getClient(req);
   const { guildId } = req.params;
 
-  const user = req.user as { id: string; guilds?: Array<{ id: string; permissions: string }> };
-  const userGuild = user.guilds?.find((g) => g.id === guildId);
-  if (!userGuild || !(parseInt(userGuild.permissions) & 0x20)) {
-    return res.status(403).json({ error: 'Missing permissions' });
+  const parsed = guildSettingsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: 'Invalid settings',
+      issues: parsed.error.issues.map((issue) => ({
+        path: issue.path.join('.'),
+        message: issue.message,
+      })),
+    });
   }
 
-  const allowedFields = [
-    'dailyReward', 'weeklyReward', 'workCooldown', 'fishCooldown', 'huntCooldown',
-    'spawnEnabled', 'spawnCooldown', 'shinyRate', 'legendaryRate',
-    'robEnabled', 'robSuccessRate', 'robCooldown', 'robMaxLoss',
-    'antiSpamEnabled', 'scamDetectionEnabled', 'antiRaidEnabled', 'autoModEnabled',
-    'welcomeEnabled', 'welcomeMessage',
-  ];
-
-  const data: Record<string, unknown> = {};
-  for (const field of allowedFields) {
-    if (req.body[field] !== undefined) data[field] = req.body[field];
-  }
-
-  const updated = await client.prisma.guild.update({ where: { id: guildId }, data });
+  const updated = await client.prisma.guild.update({ where: { id: guildId }, data: parsed.data });
   res.json(updated);
-});
+}));
 
 // Guild analytics
-apiRouter.get('/guild/:guildId/analytics', requireAuth, async (req: Request, res: Response) => {
+apiRouter.get('/guild/:guildId/analytics', requireAuth, requireGuildManager, asyncRoute(async (req: Request, res: Response) => {
   const client = getClient(req);
   const { guildId } = req.params;
 
@@ -117,10 +163,10 @@ apiRouter.get('/guild/:guildId/analytics', requireAuth, async (req: Request, res
   ]);
 
   res.json({ memberCount, totalPokemonCaught, totalBattles, totalCards, recentWarnings });
-});
+}));
 
 // Recent audit log
-apiRouter.get('/guild/:guildId/auditlog', requireAuth, async (req: Request, res: Response) => {
+apiRouter.get('/guild/:guildId/auditlog', requireAuth, requireGuildManager, asyncRoute(async (req: Request, res: Response) => {
   const client = getClient(req);
   const { guildId } = req.params;
   const logs = await client.prisma.auditLog.findMany({
@@ -129,29 +175,29 @@ apiRouter.get('/guild/:guildId/auditlog', requireAuth, async (req: Request, res:
     take: 50,
   });
   res.json(logs);
-});
+}));
 
 // Global Pokemon list
-apiRouter.get('/pokemon', async (req: Request, res: Response) => {
+apiRouter.get('/pokemon', asyncRoute(async (req: Request, res: Response) => {
   const client = getClient(req);
-  const page = parseInt(req.query.page as string ?? '1');
+  const page = z.coerce.number().int().min(1).max(10_000).catch(1).parse(req.query.page);
   const limit = 50;
   const pokemon = await client.prisma.pokemon.findMany({ skip: (page - 1) * limit, take: limit, orderBy: { id: 'asc' } });
   const total = await client.prisma.pokemon.count();
   res.json({ pokemon, total, page, pages: Math.ceil(total / limit) });
-});
+}));
 
 // Active events
-apiRouter.get('/events', async (req: Request, res: Response) => {
+apiRouter.get('/events', asyncRoute(async (req: Request, res: Response) => {
   const client = getClient(req);
   const events = await client.prisma.event.findMany({ where: { isActive: true } });
   res.json(events);
-});
+}));
 
 // Active giveaways
-apiRouter.get('/giveaways', async (req: Request, res: Response) => {
+apiRouter.get('/giveaways', asyncRoute(async (req: Request, res: Response) => {
   const client = getClient(req);
-  const guildId = req.query.guildId as string;
+  const guildId = z.string().min(1).max(32).optional().catch(undefined).parse(req.query.guildId);
   const where = guildId ? { guildId, status: 'active' } : { status: 'active' };
   const giveaways = await client.prisma.giveaway.findMany({
     where,
@@ -159,4 +205,9 @@ apiRouter.get('/giveaways', async (req: Request, res: Response) => {
     orderBy: { endsAt: 'asc' },
   });
   res.json(giveaways);
+}));
+
+apiRouter.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+  getClient(req).logger.error('Dashboard API error', err);
+  if (!res.headersSent) res.status(500).json({ error: 'Internal server error' });
 });

@@ -6,30 +6,59 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import path from 'path';
+import { randomBytes } from 'crypto';
 import type { BotClient } from '../types/index.js';
 import { apiRouter } from './routes/api.js';
 
 export async function startDashboard(client: BotClient) {
   const app = express();
   const PORT = parseInt(process.env.PORT ?? process.env.DASHBOARD_PORT ?? '3001', 10);
+  const isProduction = process.env.NODE_ENV === 'production';
+  const requiredProductionEnv = [
+    'DASHBOARD_SECRET',
+    'DASHBOARD_URL',
+    'DISCORD_CLIENT_ID',
+    'DISCORD_CLIENT_SECRET',
+    'DISCORD_CALLBACK_URL',
+  ];
+  const missingProductionEnv = requiredProductionEnv.filter((name) => !process.env[name]);
+
+  if (isProduction && missingProductionEnv.length > 0) {
+    throw new Error(`Missing required dashboard environment variables: ${missingProductionEnv.join(', ')}`);
+  }
+
+  const dashboardUrl = process.env.DASHBOARD_URL ?? `http://localhost:${PORT}`;
+  const sessionSecret = process.env.DASHBOARD_SECRET ?? randomBytes(32).toString('hex');
+
+  if (!process.env.DASHBOARD_SECRET) {
+    client.logger.warn('DASHBOARD_SECRET is not set; using an ephemeral development-only session secret');
+  }
+
+  if (isProduction) app.set('trust proxy', 1);
 
   app.get('/health', (_req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
-  app.use(helmet({ contentSecurityPolicy: false }));
-  app.use(cors({ origin: process.env.DASHBOARD_URL, credentials: true }));
+  app.use(helmet());
+  app.use(cors({ origin: dashboardUrl, credentials: true, methods: ['GET', 'PATCH', 'POST'] }));
   app.use(morgan('combined'));
-  app.use(express.json());
+  app.use(express.json({ limit: '32kb' }));
   app.use(express.urlencoded({ extended: true }));
 
   app.use(session({
-    secret: process.env.DASHBOARD_SECRET ?? 'pokemon-master-secret-change-in-prod',
+    name: 'pokemon_master_session',
+    secret: sessionSecret,
     resave: false,
     saveUninitialized: false,
-    cookie: { secure: process.env.NODE_ENV === 'production', maxAge: 7 * 24 * 60 * 60 * 1000 },
+    cookie: {
+      secure: isProduction,
+      httpOnly: true,
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    },
   }));
 
   passport.use(new DiscordStrategy({
-    clientID: process.env.DISCORD_CLIENT_ID!,
+    clientID: process.env.DISCORD_CLIENT_ID ?? '',
     clientSecret: process.env.DISCORD_CLIENT_SECRET ?? '',
     callbackURL: process.env.DISCORD_CALLBACK_URL ?? 'http://localhost:3001/auth/discord/callback',
     scope: ['identify', 'guilds'],
