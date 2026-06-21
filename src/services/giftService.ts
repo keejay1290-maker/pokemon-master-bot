@@ -45,6 +45,7 @@ export async function transferPokemonGift(
       const activeBattle = await tx.battle.findFirst({
         where: {
           status: 'active',
+          startedAt: { gte: new Date(Date.now() - 15 * 60 * 1000) },
           OR: [{ challengerId: senderId }, { opponentId: senderId }],
         },
         select: { id: true },

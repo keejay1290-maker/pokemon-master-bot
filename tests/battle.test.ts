@@ -1,5 +1,14 @@
-import { applyStatusDamage, checkFainted, getBattleResultText } from '../src/services/battleService';
-import type { BattlePokemon } from '../src/types/index';
+import {
+  applyMoveEffect,
+  applyStatusDamage,
+  calculateBattleRewards,
+  calcDamage,
+  checkFainted,
+  getBattleResultText,
+  getEffectiveSpeed,
+  getMoveData,
+} from '../src/services/battleService';
+import type { BattlePokemon, BattleState } from '../src/types/index';
 
 function makePokemon(overrides: Partial<BattlePokemon> = {}): BattlePokemon {
   return {
@@ -69,5 +78,78 @@ describe('Battle engine', () => {
     expect(result).toContain('Alice');
     expect(result).toContain('Bob');
     expect(result).toContain('5');
+  });
+
+  test('burn halves physical attack damage', () => {
+    jest.spyOn(Math, 'random').mockReturnValue(0.5);
+    const attacker = makePokemon({ attack: 120 });
+    const defender = makePokemon({ defense: 100, types: ['normal'] });
+    const move = getMoveData('tackle');
+
+    const normalDamage = calcDamage(attacker, defender, move, 'clear').damage;
+    attacker.statusEffect = 'burn';
+    const burnedDamage = calcDamage(attacker, defender, move, 'clear').damage;
+
+    expect(burnedDamage).toBeLessThan(normalDamage);
+    jest.restoreAllMocks();
+  });
+
+  test('type immunity deals zero damage', () => {
+    jest.spyOn(Math, 'random').mockReturnValue(0.5);
+    const attacker = makePokemon({
+      types: ['electric'],
+      moves: ['thunderbolt'],
+      moveData: [getMoveData('thunderbolt')],
+    });
+    const groundDefender = makePokemon({ types: ['ground'] });
+    const result = calcDamage(attacker, groundDefender, getMoveData('thunderbolt'), 'clear');
+    expect(result.effectiveness).toBe(0);
+    expect(result.damage).toBe(0);
+    jest.restoreAllMocks();
+  });
+
+  test('Growl lowers the defender attack stage', () => {
+    jest.spyOn(Math, 'random').mockReturnValue(0);
+    const defender = makePokemon();
+    const message = applyMoveEffect(getMoveData('growl'), defender);
+    expect(defender.statStages.attack).toBe(-1);
+    expect(message).toContain('Attack fell');
+    jest.restoreAllMocks();
+  });
+
+  test('paralysis halves effective speed', () => {
+    const healthy = makePokemon({ speed: 100 });
+    const paralyzed = makePokemon({ speed: 100, statusEffect: 'paralysis' });
+    expect(getEffectiveSpeed(healthy)).toBe(100);
+    expect(getEffectiveSpeed(paralyzed)).toBe(50);
+  });
+
+  test('battle rewards favor decisive wins and ranked play', () => {
+    const baseState: BattleState = {
+      id: 'battle-1',
+      challengerId: 'one',
+      opponentId: 'two',
+      guildId: 'guild',
+      type: 'unranked',
+      status: 'active',
+      turn: 5,
+      currentTurnUserId: 'one',
+      challengerTeam: [makePokemon()],
+      opponentTeam: [makePokemon()],
+      challengerActivePokemonIndex: 0,
+      opponentActivePokemonIndex: 0,
+      weather: 'clear',
+      weatherTurns: 0,
+      battleLog: [],
+      channelId: 'channel',
+    };
+
+    const fast = calculateBattleRewards(baseState);
+    const slow = calculateBattleRewards({ ...baseState, turn: 25 });
+    const ranked = calculateBattleRewards({ ...baseState, type: 'ranked' });
+    expect(fast.coinReward).toBeGreaterThan(slow.coinReward);
+    expect(ranked.coinReward).toBeGreaterThan(fast.coinReward);
+    expect(ranked.rankedGain).toBe(25);
+    expect(fast.loserXp).toBeGreaterThan(0);
   });
 });

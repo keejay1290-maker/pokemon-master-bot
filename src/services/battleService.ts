@@ -1,7 +1,7 @@
-import type { BotClient, BattleState, BattlePokemon, StatStages, MoveData } from '../types/index.js';
-import { calcPokemonStats, getTypeEffectiveness, getEffectivenessText, TYPE_CHART } from '../utils/pokemon.js';
-import { PrismaClient } from '@prisma/client';
-import { addXp } from './userService.js';
+import type { BotClient, BattleState, BattlePokemon, MoveData } from '../types/index.js';
+import { calcPokemonStats, getTypeEffectiveness } from '../utils/pokemon.js';
+import { PrismaClient, type Prisma } from '@prisma/client';
+import { addXp, creditBalanceInTransaction } from './userService.js';
 import { checkAndAwardAchievements } from './achievementService.js';
 import { incrementQuestProgress } from './questService.js';
 
@@ -11,10 +11,10 @@ export const MOVE_TABLE: Record<string, Omit<MoveData, 'name'>> = {
   tackle:       { type: 'normal',   category: 'Physical', power: 40,  accuracy: 100, pp: 35 },
   scratch:      { type: 'normal',   category: 'Physical', power: 40,  accuracy: 100, pp: 35 },
   pound:        { type: 'normal',   category: 'Physical', power: 40,  accuracy: 100, pp: 35 },
-  growl:        { type: 'normal',   category: 'Status',   power: 0,   accuracy: 100, pp: 40 },
-  leer:         { type: 'normal',   category: 'Status',   power: 0,   accuracy: 100, pp: 30 },
+  growl:        { type: 'normal',   category: 'Status',   power: 0,   accuracy: 100, pp: 40, effect: 'attack_down', effectChance: 100 },
+  leer:         { type: 'normal',   category: 'Status',   power: 0,   accuracy: 100, pp: 30, effect: 'defense_down', effectChance: 100 },
   tail_whip:    { type: 'normal',   category: 'Status',   power: 0,   accuracy: 100, pp: 30 },
-  'tail whip':  { type: 'normal',   category: 'Status',   power: 0,   accuracy: 100, pp: 30 },
+  'tail whip':  { type: 'normal',   category: 'Status',   power: 0,   accuracy: 100, pp: 30, effect: 'defense_down', effectChance: 100 },
   quick_attack: { type: 'normal',   category: 'Physical', power: 40,  accuracy: 100, pp: 30, priority: 1 },
   'quick attack': { type: 'normal', category: 'Physical', power: 40,  accuracy: 100, pp: 30, priority: 1 },
   headbutt:     { type: 'normal',   category: 'Physical', power: 70,  accuracy: 100, pp: 15 },
@@ -24,8 +24,8 @@ export const MOVE_TABLE: Record<string, Omit<MoveData, 'name'>> = {
   'hyper beam': { type: 'normal',   category: 'Special',  power: 150, accuracy: 90,  pp: 5  },
   hyper_beam:   { type: 'normal',   category: 'Special',  power: 150, accuracy: 90,  pp: 5  },
   // Fire
-  ember:        { type: 'fire',     category: 'Special',  power: 40,  accuracy: 100, pp: 25 },
-  flamethrower: { type: 'fire',     category: 'Special',  power: 90,  accuracy: 100, pp: 15 },
+  ember:        { type: 'fire',     category: 'Special',  power: 40,  accuracy: 100, pp: 25, effect: 'burn', effectChance: 10 },
+  flamethrower: { type: 'fire',     category: 'Special',  power: 90,  accuracy: 100, pp: 15, effect: 'burn', effectChance: 10 },
   'fire blast': { type: 'fire',     category: 'Special',  power: 110, accuracy: 85,  pp: 5  },
   fire_blast:   { type: 'fire',     category: 'Special',  power: 110, accuracy: 85,  pp: 5  },
   'fire spin':  { type: 'fire',     category: 'Special',  power: 35,  accuracy: 85,  pp: 15 },
@@ -44,13 +44,13 @@ export const MOVE_TABLE: Record<string, Omit<MoveData, 'name'>> = {
   // Electric
   'thunder shock': { type: 'electric', category: 'Special', power: 40, accuracy: 100, pp: 30 },
   thundershock: { type: 'electric', category: 'Special',  power: 40,  accuracy: 100, pp: 30 },
-  thunderbolt:  { type: 'electric', category: 'Special',  power: 90,  accuracy: 100, pp: 15 },
-  thunder:      { type: 'electric', category: 'Special',  power: 110, accuracy: 70,  pp: 10 },
+  thunderbolt:  { type: 'electric', category: 'Special',  power: 90,  accuracy: 100, pp: 15, effect: 'paralysis', effectChance: 10 },
+  thunder:      { type: 'electric', category: 'Special',  power: 110, accuracy: 70,  pp: 10, effect: 'paralysis', effectChance: 30 },
   // Psychic
   psychic:      { type: 'psychic',  category: 'Special',  power: 90,  accuracy: 100, pp: 10 },
   confusion:    { type: 'psychic',  category: 'Special',  power: 50,  accuracy: 100, pp: 25 },
   // Ice
-  'ice beam':   { type: 'ice',      category: 'Special',  power: 90,  accuracy: 100, pp: 10 },
+  'ice beam':   { type: 'ice',      category: 'Special',  power: 90,  accuracy: 100, pp: 10, effect: 'freeze', effectChance: 10 },
   ice_beam:     { type: 'ice',      category: 'Special',  power: 90,  accuracy: 100, pp: 10 },
   blizzard:     { type: 'ice',      category: 'Special',  power: 110, accuracy: 70,  pp: 5  },
   // Rock / Ground
@@ -70,7 +70,9 @@ export const MOVE_TABLE: Record<string, Omit<MoveData, 'name'>> = {
   // Fighting / Poison / Flying / Bug / Fairy
   'karate chop':{ type: 'fighting', category: 'Physical', power: 50,  accuracy: 100, pp: 25 },
   'cross chop': { type: 'fighting', category: 'Physical', power: 100, accuracy: 80,  pp: 5  },
-  'poison sting':{ type: 'poison',  category: 'Physical', power: 15,  accuracy: 100, pp: 35 },
+  'poison sting':{ type: 'poison',  category: 'Physical', power: 15,  accuracy: 100, pp: 35, effect: 'poison', effectChance: 30 },
+  toxic:        { type: 'poison',   category: 'Status',   power: 0,   accuracy: 90,  pp: 10, effect: 'poison', effectChance: 100 },
+  'sleep powder': { type: 'grass',  category: 'Status',   power: 0,   accuracy: 75,  pp: 15, effect: 'sleep', effectChance: 100 },
   'gust':       { type: 'flying',   category: 'Special',  power: 40,  accuracy: 100, pp: 35 },
   'wing attack':{ type: 'flying',   category: 'Physical', power: 60,  accuracy: 100, pp: 35 },
   'bug bite':   { type: 'bug',      category: 'Physical', power: 60,  accuracy: 100, pp: 20 },
@@ -174,8 +176,23 @@ export function calcDamage(
     return { damage: 0, effectiveness: 1, isCrit: false };
   }
 
-  const atk = move.category === 'Physical' ? attacker.attack : attacker.spAttack;
-  const def = move.category === 'Physical' ? defender.defense : defender.spDefense;
+  const attackStage = move.category === 'Physical'
+    ? attacker.statStages.attack
+    : attacker.statStages.spAttack;
+  const defenseStage = move.category === 'Physical'
+    ? defender.statStages.defense
+    : defender.statStages.spDefense;
+  let atk = applyStatStage(
+    move.category === 'Physical' ? attacker.attack : attacker.spAttack,
+    attackStage,
+  );
+  const def = applyStatStage(
+    move.category === 'Physical' ? defender.defense : defender.spDefense,
+    defenseStage,
+  );
+  if (move.category === 'Physical' && attacker.statusEffect === 'burn') {
+    atk = Math.max(1, Math.floor(atk * 0.5));
+  }
 
   const levelFactor = (2 * attacker.level) / 5 + 2;
   const baseDmg = Math.floor((levelFactor * move.power * atk) / def / 50) + 2;
@@ -201,14 +218,25 @@ export function calcDamage(
   if (weather === 'rainy' && move.type === 'fire') weatherMod = 0.5;
   if (weather === 'sandstorm' && move.type === 'rock') weatherMod = 1.5;
 
-  const damage = Math.max(1, Math.floor(baseDmg * random * stab * effectiveness * critMod * weatherMod));
+  const damage = effectiveness === 0
+    ? 0
+    : Math.max(1, Math.floor(baseDmg * random * stab * effectiveness * critMod * weatherMod));
   return { damage, effectiveness, isCrit };
 }
 
 export function applyStatStage(base: number, stage: number): number {
-  const multipliers = [1 / 4, 1 / 3, 1 / 2, 2 / 3, 1, 3 / 2, 2, 3, 4];
-  const idx = Math.max(0, Math.min(8, stage + 4));
-  return Math.floor(base * multipliers[idx]);
+  const bounded = Math.max(-6, Math.min(6, stage));
+  const multiplier = bounded >= 0
+    ? (2 + bounded) / 2
+    : 2 / (2 - bounded);
+  return Math.max(1, Math.floor(base * multiplier));
+}
+
+export function getEffectiveSpeed(pokemon: BattlePokemon): number {
+  const staged = applyStatStage(pokemon.speed, pokemon.statStages.speed);
+  return pokemon.statusEffect === 'paralysis'
+    ? Math.max(1, Math.floor(staged * 0.5))
+    : staged;
 }
 
 export function applyStatusDamage(pokemon: BattlePokemon): { damage: number; message: string } {
@@ -259,27 +287,44 @@ export function checkStatusBlock(pokemon: BattlePokemon): { blocked: boolean; me
   return { blocked: false, message: '', cured: false };
 }
 
-/** Returns the status to inflict on defender from a move, or undefined if none. */
-export function tryInflictStatus(
-  moveType: string,
-  category: string,
-  defender: BattlePokemon
-): string | undefined {
-  if (category === 'Status' || defender.statusEffect) return undefined;
+/** Applies deterministic stat moves and curated secondary effects from MOVE_TABLE. */
+export function applyMoveEffect(move: MoveData, defender: BattlePokemon): string | undefined {
+  if (!move.effect) return undefined;
+  if (Math.random() * 100 >= (move.effectChance ?? 100)) return undefined;
 
-  const type = moveType.toLowerCase();
-  const defTypes = defender.types.map((t) => t.toLowerCase());
+  if (move.effect === 'attack_down') {
+    const before = defender.statStages.attack;
+    defender.statStages.attack = Math.max(-6, before - 1);
+    return before === -6
+      ? `${defender.name}'s Attack cannot fall any lower!`
+      : `📉 ${defender.name}'s Attack fell!`;
+  }
+  if (move.effect === 'defense_down') {
+    const before = defender.statStages.defense;
+    defender.statStages.defense = Math.max(-6, before - 1);
+    return before === -6
+      ? `${defender.name}'s Defense cannot fall any lower!`
+      : `📉 ${defender.name}'s Defense fell!`;
+  }
+  if (defender.statusEffect) return undefined;
 
-  // Fire move → 10% burn (immune: Fire types)
-  if (type === 'fire' && !defTypes.includes('fire') && Math.random() < 0.10) return 'burn';
-  // Poison/Bug move → 30% poison (immune: Poison, Steel)
-  if ((type === 'poison') && !defTypes.includes('poison') && !defTypes.includes('steel') && Math.random() < 0.30) return 'poison';
-  // Electric move → 10% paralysis (immune: Electric types)
-  if (type === 'electric' && !defTypes.includes('electric') && Math.random() < 0.10) return 'paralysis';
-  // Ice move → 10% freeze (immune: Ice types)
-  if (type === 'ice' && !defTypes.includes('ice') && Math.random() < 0.10) return 'freeze';
+  const defenderTypes = defender.types.map((type) => type.toLowerCase());
+  if (move.effect === 'burn' && defenderTypes.includes('fire')) return undefined;
+  if (move.effect === 'poison' &&
+    (defenderTypes.includes('poison') || defenderTypes.includes('steel'))) return undefined;
+  if (move.effect === 'paralysis' && move.type === 'electric' && defenderTypes.includes('ground')) return undefined;
+  if (move.effect === 'freeze' && defenderTypes.includes('ice')) return undefined;
 
-  return undefined;
+  defender.statusEffect = move.effect;
+  defender.statusTurns = 0;
+  const statusNames: Record<string, string> = {
+    burn: 'burned 🔥',
+    poison: 'poisoned ☠️',
+    paralysis: 'paralyzed ⚡',
+    sleep: 'put to sleep 😴',
+    freeze: 'frozen 🧊',
+  };
+  return `⚡ ${defender.name} was ${statusNames[move.effect] ?? move.effect}!`;
 }
 
 export function statusLabel(status?: string): string {
@@ -301,54 +346,87 @@ export function getBattleResultText(winner: string, loser: string, turns: number
   return `**${winner}** defeated **${loser}** in ${turns} turn${turns !== 1 ? 's' : ''}!`;
 }
 
+export interface BattleRewards {
+  coinReward: number;
+  winnerXp: number;
+  loserXp: number;
+  rankedGain: number;
+  rankedLoss: number;
+}
+
+export function calculateBattleRewards(state: BattleState): BattleRewards {
+  const isRanked = state.type === 'ranked';
+  const teamSize = Math.max(state.challengerTeam.length, state.opponentTeam.length);
+  const speedBonus = Math.max(0, 20 - state.turn) * 3;
+  return {
+    coinReward: 75 + teamSize * 25 + speedBonus + (isRanked ? 100 : 0),
+    winnerXp: 100 + teamSize * 20 + Math.min(state.turn, 30) * 2,
+    loserXp: 25 + teamSize * 10 + Math.min(state.turn, 30),
+    rankedGain: isRanked ? 25 : 0,
+    rankedLoss: isRanked ? 15 : 0,
+  };
+}
+
+function battleTeamJson(team: BattlePokemon[]): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(team)) as Prisma.InputJsonValue;
+}
+
 export async function saveBattleResult(
   client: BotClient,
   state: BattleState,
   winnerId: string
-) {
+): Promise<BattleRewards | null> {
   const loserId = winnerId === state.challengerId ? state.opponentId : state.challengerId;
-  const isRanked = state.type === 'ranked';
+  const rewards = calculateBattleRewards(state);
 
-  await client.prisma.battle.update({
-    where: { id: state.id },
-    data: {
-      status: 'finished',
-      winnerId,
+  const recorded = await client.prisma.$transaction(async (tx) => {
+    const finished = await tx.battle.updateMany({
+      where: { id: state.id, status: 'active' },
+      data: {
+        status: 'finished',
+        winnerId,
+        turns: state.turn,
+        challengerTeam: battleTeamJson(state.challengerTeam),
+        opponentTeam: battleTeamJson(state.opponentTeam),
+        battleLog: state.battleLog,
+        endedAt: new Date(),
+        rankedPointsChange: rewards.rankedGain || null,
+      },
+    });
+    if (finished.count !== 1) return false;
+
+    await tx.user.update({
+      where: { id: winnerId },
+      data: {
+        battlesWon: { increment: 1 },
+        rankedPoints: rewards.rankedGain ? { increment: rewards.rankedGain } : undefined,
+      },
+    });
+    await tx.user.update({
+      where: { id: loserId },
+      data: {
+        battlesLost: { increment: 1 },
+        rankedPoints: rewards.rankedLoss ? { decrement: rewards.rankedLoss } : undefined,
+      },
+    });
+    await creditBalanceInTransaction(tx, winnerId, rewards.coinReward, 'BATTLE_REWARD', {
+      battleId: state.id,
+      loserId,
+      type: state.type,
       turns: state.turn,
-      battleLog: state.battleLog,
-      endedAt: new Date(),
-    },
+    });
+    return true;
   });
+  if (!recorded) return null;
 
-  await client.prisma.user.update({
-    where: { id: winnerId },
-    data: {
-      battlesWon: { increment: 1 },
-      rankedPoints: isRanked ? { increment: 25 } : undefined,
-    },
-  });
-
-  await client.prisma.user.update({
-    where: { id: loserId },
-    data: {
-      battlesLost: { increment: 1 },
-      rankedPoints: isRanked ? { decrement: 15 } : undefined,
-    },
-  });
-
-  // Grant trainer XP via addXp so level-up logic fires
-  const xpGain = 100 + state.turn * 2;
-  await addXp(client.prisma, winnerId, xpGain);
-
-  // Coin reward for winner
-  const coinReward = 50 + state.turn * 2 + (isRanked ? 100 : 0);
-  await client.prisma.user.update({
-    where: { id: winnerId },
-    data: { balance: { increment: coinReward } },
-  });
+  await Promise.all([
+    addXp(client.prisma, winnerId, rewards.winnerXp),
+    addXp(client.prisma, loserId, rewards.loserXp),
+  ]);
 
   // Check achievement milestones for the winner (fire-and-forget)
   checkAndAwardAchievements(client, winnerId).catch(() => {});
   // Advance 'battle_win' quests (fire-and-forget)
   incrementQuestProgress(client.prisma, winnerId, 'battle_win', 1).catch(() => {});
+  return rewards;
 }

@@ -3,7 +3,21 @@ import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType,
 } from 'discord.js';
 import type { BotClient, Command, BattleState } from '../../types/index.js';
-import { loadBattleTeam, calcDamage, getMoveData, applyStatusDamage, checkFainted, saveBattleResult, checkAccuracy, checkStatusBlock, tryInflictStatus, statusLabel } from '../../services/battleService.js';
+import type { Prisma } from '@prisma/client';
+import {
+  loadBattleTeam,
+  calcDamage,
+  getMoveData,
+  applyStatusDamage,
+  checkFainted,
+  saveBattleResult,
+  checkAccuracy,
+  checkStatusBlock,
+  applyMoveEffect,
+  statusLabel,
+  getEffectiveSpeed,
+  type BattleRewards,
+} from '../../services/battleService.js';
 import { progressBar } from '../../utils/embeds.js';
 
 const command: Command = {
@@ -77,6 +91,7 @@ const command: Command = {
 
     const collector = msg.createMessageComponentCollector({ componentType: ComponentType.Button, time: 60000 });
 
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises
     collector.on('collect', async (btn) => {
       if (btn.user.id !== opponent.id) {
         await btn.reply({ content: "This isn't your battle invite!", ephemeral: true });
@@ -106,6 +121,8 @@ const command: Command = {
           guildId: interaction.guild!.id,
           type,
           status: 'active',
+          challengerTeam: JSON.parse(JSON.stringify(challengerTeam)) as Prisma.InputJsonValue,
+          opponentTeam: JSON.parse(JSON.stringify(opponentTeam)) as Prisma.InputJsonValue,
           startedAt: new Date(),
         },
       });
@@ -122,8 +139,8 @@ const command: Command = {
       } catch { /* non-fatal */ }
 
       // Speed-based first turn: faster active Pokémon's trainer goes first
-      const chSpeed = challengerTeam[0]?.speed ?? 0;
-      const opSpeed = opponentTeam[0]?.speed ?? 0;
+      const chSpeed = challengerTeam[0] ? getEffectiveSpeed(challengerTeam[0]) : 0;
+      const opSpeed = opponentTeam[0] ? getEffectiveSpeed(opponentTeam[0]) : 0;
       const firstTurnId = chSpeed >= opSpeed ? interaction.user.id : opponent.id;
 
       const state: BattleState = {
@@ -158,6 +175,7 @@ const command: Command = {
       await btn.update({ embeds: [battleEmbed], components: [battleRow] });
 
       // Battle timeout - warn at 4 min, expire at 5 min
+      // eslint-disable-next-line @typescript-eslint/no-misused-promises
       setTimeout(async () => {
         const rawS = await client.redis.get(battleKey);
         if (rawS) {
@@ -177,19 +195,29 @@ const command: Command = {
       }, 240000); // 4 min warning
 
       // Actual timeout at 5 min
+      // eslint-disable-next-line @typescript-eslint/no-misused-promises
       setTimeout(async () => {
         const rawS = await client.redis.get(battleKey);
         if (rawS) {
           const s = deserializeBattle(rawS);
           if (s && s.status !== 'finished') {
+            s.status = 'finished';
+            const winnerId = s.currentTurnUserId === s.challengerId ? s.opponentId : s.challengerId;
+            const winnerName = winnerId === s.challengerId ? interaction.user.username : opponent.username;
+            s.battleLog.push(`⏰ <@${s.currentTurnUserId}> ran out of time and forfeited the battle.`);
+            const rewards = await saveBattleResult(client, s, winnerId);
             await client.redis.del([battleKey, myLockKey, opponentLockKey]);
-            await msg.edit({ embeds: [new EmbedBuilder().setColor(0x808080).setTitle('⏰ Battle Timed Out').setDescription('Battle expired due to inactivity.')], components: [] }).catch(() => {});
+            await msg.edit({
+              embeds: [buildBattleEndEmbed(s, winnerName, rewards, 'timeout')],
+              components: [],
+            }).catch(() => {});
           }
         }
       }, 300000);
 
       // Move collector
       const moveCollector = msg.createMessageComponentCollector({ componentType: ComponentType.Button, time: 300000 });
+      // eslint-disable-next-line @typescript-eslint/no-misused-promises
       moveCollector.on('collect', async (moveBtn) => {
         const processingKey = `battle:processing:${state.id}`;
         const canProcess = await client.redis.set(processingKey, '1', { NX: true, EX: 5 });
@@ -205,6 +233,30 @@ const command: Command = {
 
           const currentState = deserializeBattle(rawState);
           if (!currentState || currentState.status === 'finished') { moveCollector.stop(); return; }
+
+          if (moveBtn.customId === 'battle_forfeit') {
+            if (moveBtn.user.id !== currentState.challengerId &&
+              moveBtn.user.id !== currentState.opponentId) {
+              await moveBtn.reply({ content: 'This is not your battle.', ephemeral: true });
+              return;
+            }
+            currentState.status = 'finished';
+            const winnerId = moveBtn.user.id === currentState.challengerId
+              ? currentState.opponentId
+              : currentState.challengerId;
+            const winnerName = winnerId === currentState.challengerId
+              ? interaction.user.username
+              : opponent.username;
+            currentState.battleLog.push(`🏳️ <@${moveBtn.user.id}> forfeited the battle.`);
+            const rewards = await saveBattleResult(client, currentState, winnerId);
+            await client.redis.del([battleKey, myLockKey, opponentLockKey]);
+            moveCollector.stop();
+            await moveBtn.update({
+              embeds: [buildBattleEndEmbed(currentState, winnerName, rewards, 'forfeit')],
+              components: [],
+            });
+            return;
+          }
 
           if (moveBtn.user.id !== currentState.currentTurnUserId) {
             await moveBtn.reply({ content: "It's not your turn!", ephemeral: true });
@@ -222,8 +274,8 @@ const command: Command = {
 
           if (!attacker || !defender) return;
 
-          const challengerName = isChallenger ? moveBtn.user.username : opponent.username;
-          const opponentName = isChallenger ? opponent.username : moveBtn.user.username;
+          const challengerName = interaction.user.username;
+          const opponentName = opponent.username;
 
           // 1. Status DoT (burn/poison) before move
           const dotResult = applyStatusDamage(attacker);
@@ -239,10 +291,10 @@ const command: Command = {
                 await client.redis.del([battleKey, myLockKey, opponentLockKey]);
                 moveCollector.stop();
                 const winnerId = isChallenger ? currentState.opponentId : currentState.challengerId;
-                await saveBattleResult(client, currentState, winnerId);
+                const rewards = await saveBattleResult(client, currentState, winnerId);
                 const winnerName = winnerId === currentState.challengerId ? challengerName : opponentName;
                 await moveBtn.update({
-                  embeds: [buildBattleEndEmbed(currentState, winnerName)],
+                  embeds: [buildBattleEndEmbed(currentState, winnerName, rewards)],
                   components: [],
                 });
                 return;
@@ -301,21 +353,9 @@ const command: Command = {
           }
           currentState.battleLog.push(logLine);
 
-          // 6. Status infliction from move type
-          if (moveInfo.power > 0) {
-            const inflicted = tryInflictStatus(moveInfo.type, moveInfo.category, defender);
-            if (inflicted) {
-              defender.statusEffect = inflicted;
-              const statusNames: Record<string, string> = {
-                burn: 'burned 🔥',
-                poison: 'poisoned ☠️',
-                paralysis: 'paralyzed ⚡',
-                sleep: 'put to sleep 😴',
-                freeze: 'frozen 🧊',
-              };
-              currentState.battleLog.push(`⚡ ${defender.name} was ${statusNames[inflicted] ?? inflicted}!`);
-            }
-          }
+          // 6. Apply status/stat effects declared by the move.
+          const effectMessage = applyMoveEffect(moveInfo, defender);
+          if (effectMessage) currentState.battleLog.push(effectMessage);
 
           currentState.turn++;
           currentState.currentTurnUserId = advanceTurn(currentState, isChallenger);
@@ -330,10 +370,10 @@ const command: Command = {
               await client.redis.del([battleKey, myLockKey, opponentLockKey]);
               moveCollector.stop();
               const winnerId = moveBtn.user.id;
-              await saveBattleResult(client, currentState, winnerId);
+              const rewards = await saveBattleResult(client, currentState, winnerId);
               const winnerName = winnerId === currentState.challengerId ? challengerName : opponentName;
               await moveBtn.update({
-                embeds: [buildBattleEndEmbed(currentState, winnerName)],
+                embeds: [buildBattleEndEmbed(currentState, winnerName, rewards)],
                 components: [],
               });
               return;
@@ -373,6 +413,7 @@ const command: Command = {
       });
     });
 
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises
     collector.on('end', async (_, reason) => {
       if (!challengeResolved || reason === 'time') {
         await client.redis.del([myLockKey, opponentLockKey]);
@@ -398,7 +439,9 @@ function advanceTurn(state: BattleState, wasChallenger: boolean): string {
 function recomputeRoundLeader(state: BattleState): void {
   const chActive = state.challengerTeam[state.challengerActivePokemonIndex];
   const opActive = state.opponentTeam[state.opponentActivePokemonIndex];
-  state.roundLeaderId = (chActive?.speed ?? 0) >= (opActive?.speed ?? 0)
+  const challengerSpeed = chActive ? getEffectiveSpeed(chActive) : 0;
+  const opponentSpeed = opActive ? getEffectiveSpeed(opActive) : 0;
+  state.roundLeaderId = challengerSpeed >= opponentSpeed
     ? state.challengerId
     : state.opponentId;
 }
@@ -420,27 +463,47 @@ function buildBattleEmbed(state: BattleState, challengerName: string, opponentNa
     .addFields(
       {
         name: `${challengerName}'s ${ch?.name ?? '???'}${chStatus ? ` ${chStatus}` : ''}`,
-        value: `HP: \`${progressBar(ch?.currentHp ?? 0, ch?.maxHp ?? 1)}\` ${ch?.currentHp ?? 0}/${ch?.maxHp ?? 0}`,
+        value: `Lv.${ch?.level ?? '?'} • ${(ch?.types ?? []).join('/')}\nHP: \`${progressBar(ch?.currentHp ?? 0, ch?.maxHp ?? 1)}\` ${ch?.currentHp ?? 0}/${ch?.maxHp ?? 0}\nTeam: ${state.challengerTeam.filter((pokemon) => pokemon.currentHp > 0).length} remaining`,
         inline: true,
       },
       {
         name: `${opponentName}'s ${op?.name ?? '???'}${opStatus ? ` ${opStatus}` : ''}`,
-        value: `HP: \`${progressBar(op?.currentHp ?? 0, op?.maxHp ?? 1)}\` ${op?.currentHp ?? 0}/${op?.maxHp ?? 0}`,
+        value: `Lv.${op?.level ?? '?'} • ${(op?.types ?? []).join('/')}\nHP: \`${progressBar(op?.currentHp ?? 0, op?.maxHp ?? 1)}\` ${op?.currentHp ?? 0}/${op?.maxHp ?? 0}\nTeam: ${state.opponentTeam.filter((pokemon) => pokemon.currentHp > 0).length} remaining`,
         inline: true,
       }
     )
     .setFooter({ text: `${turnName}'s turn • ${state.type} battle` });
 }
 
-function buildBattleEndEmbed(state: BattleState, winnerName: string): EmbedBuilder {
-  return new EmbedBuilder()
+function buildBattleEndEmbed(
+  state: BattleState,
+  winnerName: string,
+  rewards: BattleRewards | null,
+  reason: 'victory' | 'forfeit' | 'timeout' = 'victory',
+): EmbedBuilder {
+  const reasonText = reason === 'timeout'
+    ? 'The opposing trainer ran out of time.'
+    : reason === 'forfeit'
+      ? 'The opposing trainer forfeited.'
+      : 'The opposing team was defeated.';
+  const embed = new EmbedBuilder()
     .setColor(0xffd700)
     .setTitle('🏆 Battle Ended!')
-    .setDescription(`**${winnerName}** wins in **${state.turn}** turns!\n\n${state.battleLog.slice(-5).join('\n')}`)
+    .setDescription(`**${winnerName}** wins in **${state.turn}** turns!\n${reasonText}\n\n${state.battleLog.slice(-5).join('\n')}`)
     .addFields(
       { name: '📊 Total Turns', value: `${state.turn}`, inline: true },
       { name: '👑 Winner', value: winnerName, inline: true },
     );
+  if (rewards) {
+    embed.addFields(
+      { name: '💰 Winner Reward', value: `${rewards.coinReward.toLocaleString()} PokéCoins`, inline: true },
+      { name: '⭐ Trainer XP', value: `Winner +${rewards.winnerXp}\nOpponent +${rewards.loserXp}`, inline: true },
+      ...(rewards.rankedGain > 0
+        ? [{ name: '🏅 Ranked Points', value: `Winner +${rewards.rankedGain}\nOpponent -${rewards.rankedLoss}`, inline: true }]
+        : []),
+    );
+  }
+  return embed;
 }
 
 function buildBattleRow(state: BattleState): ActionRowBuilder<ButtonBuilder> {
@@ -450,13 +513,32 @@ function buildBattleRow(state: BattleState): ActionRowBuilder<ButtonBuilder> {
     ? state.challengerActivePokemonIndex : state.opponentActivePokemonIndex;
   const moves = currentTeam[activeIdx]?.moves ?? ['tackle', 'growl', 'scratch', 'ember'];
 
+  const moveData = currentTeam[activeIdx]?.moveData ?? [];
+  const typeEmoji: Record<string, string> = {
+    fire: '🔥', water: '💧', grass: '🌿', electric: '⚡', ice: '🧊',
+    fighting: '🥊', poison: '☠️', ground: '🌍', flying: '🪽',
+    psychic: '🔮', bug: '🐛', rock: '🪨', ghost: '👻', dragon: '🐉',
+    dark: '🌑', steel: '⚙️', fairy: '✨', normal: '⚪',
+  };
+  const buttons = moves.slice(0, 4).map((move, i) => {
+    const data = moveData[i] ?? getMoveData(move);
+    const power = data.category === 'Status' ? 'Status' : `${data.power} power`;
+    return new ButtonBuilder()
+      .setCustomId(`move_${i}`)
+      .setLabel(`${move.charAt(0).toUpperCase() + move.slice(1)} • ${power}`.slice(0, 80))
+      .setEmoji(typeEmoji[data.type.toLowerCase()] ?? '⚪')
+      .setStyle(data.category === 'Status' ? ButtonStyle.Secondary : ButtonStyle.Primary);
+  });
+  buttons.push(
+    new ButtonBuilder()
+      .setCustomId('battle_forfeit')
+      .setLabel('Forfeit')
+      .setEmoji('🏳️')
+      .setStyle(ButtonStyle.Danger)
+  );
+
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    moves.slice(0, 4).map((move, i) =>
-      new ButtonBuilder()
-        .setCustomId(`move_${i}`)
-        .setLabel(move.charAt(0).toUpperCase() + move.slice(1))
-        .setStyle(ButtonStyle.Primary)
-    )
+    buttons
   );
 }
 

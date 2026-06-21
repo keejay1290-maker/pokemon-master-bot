@@ -24,6 +24,25 @@ function validateCoinAmount(amount: number): void {
   }
 }
 
+export async function creditBalanceInTransaction(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  amount: number,
+  type: string,
+  metadata?: Prisma.InputJsonValue,
+) {
+  validateCoinAmount(amount);
+  if (amount < 0) throw new Error('INVALID_AMOUNT');
+  const user = await tx.user.update({
+    where: { id: userId },
+    data: { balance: { increment: amount }, totalEarned: { increment: amount } },
+  });
+  await tx.economyLedger.create({
+    data: { type, toUserId: userId, amount, metadata },
+  });
+  return user;
+}
+
 export async function addBalance(
   prisma: PrismaClient,
   userId: string,
@@ -53,14 +72,7 @@ export async function addBalance(
   }
 
   return prisma.$transaction(async (tx) => {
-    const user = await tx.user.update({
-      where: { id: userId },
-      data: { balance: { increment: amount }, totalEarned: { increment: amount } },
-    });
-    await tx.economyLedger.create({
-      data: { type, toUserId: userId, amount, metadata },
-    });
-    return user;
+    return creditBalanceInTransaction(tx, userId, amount, type, metadata);
   });
 }
 
