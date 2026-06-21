@@ -9,7 +9,12 @@ function makePokemon(overrides: Partial<BattlePokemon> = {}): BattlePokemon {
     level: 50,
     isShiny: false,
     nature: 'Hardy',
+    types: ['grass', 'poison'],
     moves: ['tackle', 'growl'],
+    moveData: [
+      { name: 'tackle', type: 'normal', category: 'Physical', power: 40, accuracy: 100, pp: 35 },
+      { name: 'growl', type: 'normal', category: 'Status', power: 0, accuracy: 100, pp: 40 },
+    ],
     maxHp: 150,
     currentHp: 150,
     attack: 100,
