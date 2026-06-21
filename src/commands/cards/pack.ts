@@ -1,6 +1,6 @@
 import {
   SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder,
-  ActionRowBuilder, StringSelectMenuBuilder, StringSelectMenuInteraction,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, StringSelectMenuInteraction,
 } from 'discord.js';
 import type { BotClient, Command } from '../../types/index.js';
 import { openPack, fetchSets } from '../../services/pokemonTcgService.js';
@@ -11,6 +11,39 @@ import { createPackSession, type ResolvedCard } from '../../handlers/packRevealH
 import { getPackCost, getPackTier } from '../../config/pack-tiers.js';
 
 const PACK_COST = 500; // default fallback
+type PackFlowInteraction = ChatInputCommandInteraction | StringSelectMenuInteraction;
+
+export async function buildPackSelectionView(client: BotClient, userId: string, persistent = false) {
+  const packs = await client.prisma.userInventory.findMany({
+    where: { userId, itemId: { startsWith: 'pack:' }, quantity: { gt: 0 } },
+    orderBy: { updatedAt: 'desc' },
+    take: 25,
+  });
+  if (packs.length === 0) {
+    return {
+      embeds: [new EmbedBuilder()
+        .setColor(0xff4444)
+        .setTitle('❌ No Packs Available')
+        .setDescription('You have no unopened packs.\nBuy one with `/pack buy` or ask an admin with `/giftpack`.')],
+      components: [],
+    };
+  }
+  const selectMenu = new StringSelectMenuBuilder()
+    .setCustomId(`${persistent ? 'pack_continue_select' : 'pack_select'}:${userId}`)
+    .setPlaceholder('Choose a pack to open...')
+    .addOptions(packs.map((pack) => ({
+      label: pack.itemName,
+      description: `×${pack.quantity} available`,
+      value: pack.itemId,
+    })));
+  return {
+    embeds: [new EmbedBuilder()
+      .setColor(0x9b59b6)
+      .setTitle('📦 Open a Pack')
+      .setDescription('Choose a pack below. Every card is secured in your collection before the reveal begins.')],
+    components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu)],
+  };
+}
 
 const command: Command = {
   data: new SlashCommandBuilder()
@@ -102,12 +135,12 @@ async function handleBuy(interaction: ChatInputCommandInteraction, client: BotCl
         create: { userId: interaction.user.id, itemId: `pack:${setId}`, itemName: `${setName} Pack`, quantity: 1 },
       });
     });
-  } catch (e: any) {
-    if (e.message === 'INSUFFICIENT_FUNDS') {
+  } catch (error: unknown) {
+    if (error instanceof Error && error.message === 'INSUFFICIENT_FUNDS') {
       const u = await client.prisma.user.findUnique({ where: { id: interaction.user.id } });
       await interaction.editReply(`❌ You need **${formatNumber(cost)} PokéCoins** to buy a pack. You have **${formatNumber(u?.balance ?? 0)}**.`);
     } else {
-      console.error(e);
+      client.logger.error('Pack purchase failed', error);
       await interaction.editReply('❌ An error occurred. Please try again.');
     }
     return;
@@ -128,8 +161,15 @@ async function handleBuy(interaction: ChatInputCommandInteraction, client: BotCl
         { name: '📦 Tier', value: `Tier ${tier}`, inline: true },
         { name: '📦 Owned (this set)', value: `${inv?.quantity ?? 1}`, inline: true },
       )
-      .setFooter({ text: 'Open with /pack open' })
+      .setFooter({ text: 'Your pack is ready to open.' })
       .setTimestamp()],
+    components: [new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`pack_open_another:${interaction.user.id}`)
+        .setLabel('Open Pack')
+        .setEmoji('📦')
+        .setStyle(ButtonStyle.Success),
+    )],
   });
 }
 
@@ -160,52 +200,23 @@ async function handleInventory(interaction: ChatInputCommandInteraction, client:
       .setTitle('🎒 Your Pack Inventory')
       .setDescription(lines)
       .addFields({ name: 'Total Packs', value: `${total}`, inline: true })
-      .setFooter({ text: 'Open a pack with /pack open' })
+      .setFooter({ text: 'Choose Open Pack to continue.' })
       .setTimestamp()],
+    components: [new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`pack_open_another:${interaction.user.id}`)
+        .setLabel('Open Pack')
+        .setEmoji('📦')
+        .setStyle(ButtonStyle.Success),
+    )],
   });
 }
 
 async function handleOpen(interaction: ChatInputCommandInteraction, client: BotClient) {
   await interaction.deferReply();
-
-  const packs = await client.prisma.userInventory.findMany({
-    where: { userId: interaction.user.id, itemId: { startsWith: 'pack:' }, quantity: { gt: 0 } },
-    orderBy: { updatedAt: 'desc' },
-    take: 25,
-  });
-
-  if (packs.length === 0) {
-    await interaction.editReply({
-      embeds: [new EmbedBuilder()
-        .setColor(0xff4444)
-        .setTitle('❌ No Packs Available')
-        .setDescription('You have no unopened packs.\nBuy one with `/pack buy` or ask an admin with `/giftpack`.')],
-    });
-    return;
-  }
-
-  // Show select menu for pack choice
-  const selectMenu = new StringSelectMenuBuilder()
-    .setCustomId(`pack_select:${interaction.user.id}`)
-    .setPlaceholder('Choose a pack to open...')
-    .addOptions(
-      packs.map((p) => ({
-        label: p.itemName,
-        description: `×${p.quantity} available`,
-        value: p.itemId,
-      }))
-    );
-
-  const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
-
-  const reply = await interaction.editReply({
-    embeds: [new EmbedBuilder()
-      .setColor(0x9b59b6)
-      .setTitle('📦 Open a Pack')
-      .setDescription('Select a pack from your inventory to begin opening.\nCards are revealed one at a time!'),
-    ],
-    components: [row],
-  });
+  const view = await buildPackSelectionView(client, interaction.user.id);
+  const reply = await interaction.editReply(view);
+  if (view.components.length === 0) return;
 
   // Await the selection
   try {
@@ -217,72 +228,72 @@ async function handleOpen(interaction: ChatInputCommandInteraction, client: BotC
     // Acknowledge the select-menu interaction immediately — Discord gives 3s before it expires.
     // All remaining async work (DB, TCG API, Redis) runs after this defer.
     await selection.deferUpdate();
+    await openSelectedPack(selection, client, selection.values[0]);
+  } catch (error: unknown) {
+    const errorCode = error && typeof error === 'object' && 'code' in error
+      ? String(error.code)
+      : '';
+    const errorMessage = error instanceof Error ? error.message : '';
+    const isTimeout = errorCode === 'InteractionCollectorError' || errorMessage.includes('timeout');
+    await interaction.editReply({
+      content: isTimeout
+        ? '⌛ Selection timed out. Use `/pack open` to try again.'
+        : '❌ An error occurred. Please use `/pack open` to start again.',
+      embeds: [],
+      components: [],
+    }).catch(() => {});
+  }
+}
 
-    const chosenItemId = selection.values[0];
-    const chosenPack = packs.find((p) => p.itemId === chosenItemId);
-    if (!chosenPack) {
-      await interaction.editReply({ content: '❌ Pack not found.', embeds: [], components: [] });
-      return;
-    }
+export async function openSelectedPack(
+  interaction: PackFlowInteraction,
+  client: BotClient,
+  chosenItemId: string,
+): Promise<void> {
+  const chosenPack = await client.prisma.userInventory.findUnique({
+    where: { userId_itemId: { userId: interaction.user.id, itemId: chosenItemId } },
+  });
+  if (!chosenPack || chosenPack.quantity < 1) {
+    await interaction.editReply({ content: '❌ Pack no longer in inventory.', embeds: [], components: [] });
+    return;
+  }
+  const setId = chosenItemId.replace('pack:', '');
 
-    const setId = chosenItemId.replace('pack:', '');
+  try {
+    const consumed = await client.prisma.userInventory.updateMany({
+      where: { id: chosenPack.id, userId: interaction.user.id, quantity: { gt: 0 } },
+      data: { quantity: { decrement: 1 } },
+    });
+    if (consumed.count !== 1) throw new Error('NO_PACK');
+  } catch {
+    await interaction.editReply({ content: '❌ Pack no longer in inventory.', embeds: [], components: [] });
+    return;
+  }
 
-    // Atomic deduction — verify ownership before consuming
-    try {
-      await client.prisma.$transaction(async (tx) => {
-        const inv = await tx.userInventory.findUnique({
-          where: { userId_itemId: { userId: interaction.user.id, itemId: chosenItemId } },
-        });
-        if (!inv || inv.quantity < 1) throw new Error('NO_PACK');
-        if (inv.quantity === 1) {
-          await tx.userInventory.delete({ where: { userId_itemId: { userId: interaction.user.id, itemId: chosenItemId } } });
-        } else {
-          await tx.userInventory.update({
-            where: { userId_itemId: { userId: interaction.user.id, itemId: chosenItemId } },
-            data: { quantity: { decrement: 1 } },
-          });
-        }
-      });
-    } catch (e: any) {
-      if (e.message === 'NO_PACK') {
-        await interaction.editReply({ content: '❌ Pack no longer in inventory.', embeds: [], components: [] });
-      } else {
-        console.error(e);
-        await interaction.editReply({ content: '❌ An error occurred.', embeds: [], components: [] });
-      }
-      return;
-    }
+  const refund = async () => {
+    await client.prisma.userInventory.upsert({
+      where: { userId_itemId: { userId: interaction.user.id, itemId: chosenItemId } },
+      update: { quantity: { increment: 1 } },
+      create: { userId: interaction.user.id, itemId: chosenItemId, itemName: chosenPack.itemName, quantity: 1 },
+    });
+  };
 
-    // Fetch the cards for this pack
+  let sessionCreated = false;
+  try {
     const rawCards = await openPack(client, setId);
-    if (rawCards.length === 0) {
-      // Refund the pack
-      await client.prisma.userInventory.upsert({
-        where: { userId_itemId: { userId: interaction.user.id, itemId: chosenItemId } },
-        update: { quantity: { increment: 1 } },
-        create: { userId: interaction.user.id, itemId: chosenItemId, itemName: chosenPack.itemName, quantity: 1 },
-      });
-      await interaction.editReply({ content: '❌ Could not fetch cards from TCG API. Your pack has been refunded.', embeds: [], components: [] });
-      return;
-    }
+    if (rawCards.length === 0) throw new Error('PACK_API_EMPTY');
 
-    // Check which cards the user already owns (for NEW vs DUPLICATE)
-    const cardIds = rawCards.map((c) => (c as Record<string, unknown>).id as string);
+    const cardIds = rawCards.map((card) => card.id as string);
     const existingCards = await client.prisma.userCard.findMany({
       where: { userId: interaction.user.id, cardId: { in: cardIds } },
     });
-    const ownedIds = new Set(existingCards.map((ec) => ec.cardId));
-
-    // Fetch set info for logo
+    const ownedIds = new Set(existingCards.map((card) => card.cardId));
     const sets = await fetchSets(client);
-    const setInfo = (sets as Array<{ id: string; name: string; images?: { logo?: string; symbol?: string } }>)
-      .find((s) => s.id === setId);
-
-    const resolvedCards: ResolvedCard[] = rawCards.map((c) => {
-      const card = c as Record<string, unknown>;
+    const setInfo = (sets as Array<{ id: string; name: string; images?: { logo?: string } }>)
+      .find((set) => set.id === setId);
+    const resolvedCards: ResolvedCard[] = rawCards.map((rawCard) => {
+      const card = rawCard as Record<string, unknown>;
       const images = card.images as Record<string, unknown> | undefined;
-      const attacks = card.attacks as Array<{ name: string; damage: string; cost: string[] }> | undefined;
-      const weaknesses = card.weaknesses as Array<{ type: string; value: string }> | undefined;
       return {
         id: card.id as string,
         name: card.name as string,
@@ -294,115 +305,31 @@ async function handleOpen(interaction: ChatInputCommandInteraction, client: BotC
         hp: (card.hp as string) ?? null,
         types: (card.types as string[]) ?? undefined,
         subtypes: (card.subtypes as string[]) ?? undefined,
-        attacks: attacks?.slice(0, 2) ?? undefined,
-        weaknesses: weaknesses?.slice(0, 2) ?? undefined,
+        attacks: (card.attacks as ResolvedCard['attacks'])?.slice(0, 2),
+        weaknesses: (card.weaknesses as ResolvedCard['weaknesses'])?.slice(0, 2),
         retreatCost: (card.retreatCost as number) ?? undefined,
-        marketValue: undefined, // calculated during reveal
       };
     });
-
-    let sessionResult: Awaited<ReturnType<typeof createPackSession>>;
-    try {
-      sessionResult = await createPackSession(
-        client,
-        interaction.user.id,
-        interaction.guild?.id,
-        setId,
-        setInfo?.name ?? chosenPack.itemName.replace(' Pack', ''),
-        setInfo?.images?.logo ?? undefined,
-        resolvedCards
-      );
-    } catch (e: any) {
-      // If Redis/cache is unavailable, fall back to a non-interactive pack open:
-      // persist all cards immediately and show a summary embed (no session).
-      if (e?.message === 'REDIS_UNAVAILABLE') {
-        try {
-          // Upsert card definitions and user cards in a transaction
-          await client.prisma.$transaction(async (tx) => {
-            for (const card of resolvedCards) {
-              await tx.card.upsert({
-                where: { id: card.id },
-                update: { marketValue: card.marketValue ?? undefined },
-                create: {
-                  id: card.id,
-                  name: card.name,
-                  supertype: 'Pokémon',
-                  subtypes: [],
-                  types: card.types ?? [],
-                  setId,
-                  setName: setInfo?.name ?? chosenPack.itemName.replace(' Pack', ''),
-                  number: card.number,
-                  rarity: card.rarity,
-                  imageSmall: card.imageSmall ?? null,
-                  imageLarge: card.imageLarge ?? null,
-                  marketValue: card.marketValue ?? null,
-                },
-              });
-
-              await tx.userCard.upsert({
-                where: { userId_cardId_isFoil: { userId: interaction.user.id, cardId: card.id, isFoil: false } },
-                update: { quantity: { increment: 1 } },
-                create: { userId: interaction.user.id, cardId: card.id, quantity: 1, isFoil: false },
-              });
-            }
-
-            // update cardsCollected
-            await tx.user.update({ where: { id: interaction.user.id }, data: { cardsCollected: { increment: resolvedCards.length } } });
-          });
-
-          const newCount = resolvedCards.filter((c) => c.isNew).length;
-          const dupCount = resolvedCards.length - newCount;
-
-          const summary = new EmbedBuilder()
-            .setColor(0x9b59b6)
-            .setTitle(`📦 ${setInfo?.name ?? chosenPack.itemName.replace(' Pack', '')} — Pack Opened`)
-            .setDescription(`Your pack was opened without the interactive reveal (cache offline). All cards have been added to your collection.`)
-            .addFields(
-              { name: '🃏 Cards Opened', value: `${resolvedCards.length}`, inline: true },
-              { name: '✨ New Cards', value: `${newCount}`, inline: true },
-              { name: '♻️ Duplicates', value: `${dupCount}`, inline: true },
-            )
-            .setTimestamp();
-
-          const { safeEditReply } = await import('../../utils/interactionReply.js');
-          await safeEditReply(interaction, { embeds: [summary], components: [] });
-          return;
-        } catch (err) {
-          console.error('Pack fallback failed:', err);
-          // As a last resort, refund the pack
-          await client.prisma.userInventory.upsert({
-            where: { userId_itemId: { userId: interaction.user.id, itemId: chosenItemId } },
-            update: { quantity: { increment: 1 } },
-            create: { userId: interaction.user.id, itemId: chosenItemId, itemName: chosenPack.itemName, quantity: 1 },
-          });
-          await interaction.editReply({ content: '❌ Pack reveal is temporarily unavailable and fallback failed. Your pack has been refunded.', embeds: [], components: [] });
-          return;
-        }
-      }
-
-      // Refund the pack — session creation failed for other reasons
-      await client.prisma.userInventory.upsert({
-        where: { userId_itemId: { userId: interaction.user.id, itemId: chosenItemId } },
-        update: { quantity: { increment: 1 } },
-        create: { userId: interaction.user.id, itemId: chosenItemId, itemName: chosenPack.itemName, quantity: 1 },
-      });
-      const msg = '❌ Failed to start pack session. Your pack has been refunded.';
-      await interaction.editReply({ content: msg, embeds: [], components: [] });
-      return;
-    }
-
-    const { safeEditReply } = await import('../../utils/interactionReply.js');
-    await safeEditReply(interaction, { embeds: [sessionResult.embed], components: [sessionResult.row] });
-
-    // Fire-and-forget quest/achievement tracking for opening a pack
+    const sessionResult = await createPackSession(
+      client,
+      interaction.user.id,
+      interaction.guild?.id,
+      setId,
+      setInfo?.name ?? chosenPack.itemName.replace(' Pack', ''),
+      setInfo?.images?.logo,
+      resolvedCards,
+    );
+    sessionCreated = true;
+    await interaction.editReply({ embeds: [sessionResult.embed], components: [sessionResult.row] });
     incrementQuestProgress(client.prisma, interaction.user.id, 'open_pack', 1).catch(() => {});
     checkAndAwardAchievements(client, interaction.user.id, interaction.channelId, interaction.guild?.id).catch(() => {});
-  } catch (e: any) {
-    const isTimeout = e?.code === 'InteractionCollectorError' || e?.message?.includes('timeout');
+  } catch (error) {
+    client.logger.error('Pack opening failed before session creation', error);
+    if (!sessionCreated) await refund();
     await interaction.editReply({
-      content: isTimeout
-        ? '⌛ Selection timed out. Use `/pack open` to try again.'
-        : '❌ An error occurred. Please use `/pack open` to start again.',
+      content: sessionCreated
+        ? '⚠️ Your cards are safe in your collection, but the reveal message could not be displayed.'
+        : '❌ Could not safely open that pack. It has been refunded.',
       embeds: [],
       components: [],
     }).catch(() => {});

@@ -17,6 +17,7 @@ export interface PackSession {
   newCardIds: string[];
   dupCardIds: string[];
   revealedCardIds: string[];
+  awardedUpfront?: boolean;
 }
 
 export interface ResolvedCard {
@@ -109,9 +110,7 @@ function buildRevealEmbed(session: PackSession, card: ResolvedCard, cardNum: num
   if (valueDisplay) embed.addFields({ name: '💰 Est. Value', value: valueDisplay, inline: true });
   embed.addFields({ name: 'Cards Remaining', value: `${remaining}`, inline: true });
 
-  if (card.imageLarge) embed.setImage(card.imageLarge);
-  else if (card.imageSmall) embed.setThumbnail(card.imageSmall);
-  else embed.setThumbnail(CARD_BACK_PLACEHOLDER_URL);
+  embed.setImage(resolveCardImage(card, session.setId));
 
   embed.setTimestamp();
   return embed;
@@ -172,6 +171,15 @@ function revealButton(sessionId: string, disabled = false) {
   );
 }
 
+function finishButton(sessionId: string) {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`pack_finish:${sessionId}`)
+      .setLabel('✨ View Pack Results')
+      .setStyle(ButtonStyle.Success)
+  );
+}
+
 function summaryButtons(userId: string, hasMorePacks: boolean) {
   const row = new ActionRowBuilder<ButtonBuilder>();
   row.addComponents(
@@ -189,6 +197,19 @@ function summaryButtons(userId: string, hasMorePacks: boolean) {
 }
 
 const PACK_SESSION_TTL_SECONDS = 900;
+
+export function resolveCardImage(card: ResolvedCard, setId: string): string {
+  const candidates = [card.imageLarge, card.imageSmall];
+  for (const candidate of candidates) {
+    if (candidate && /^https?:\/\//i.test(candidate)) {
+      return candidate.replace(/^http:\/\//i, 'https://');
+    }
+  }
+  const number = encodeURIComponent(card.number);
+  return number && number !== '0'
+    ? `https://images.pokemontcg.io/${encodeURIComponent(setId)}/${number}_hires.png`
+    : CARD_BACK_PLACEHOLDER_URL;
+}
 
 function packSessionRedisKey(sessionId: string): string {
   return `pack:session:${sessionId}`;
@@ -221,6 +242,7 @@ function parsePackSession(raw: unknown): PackSession | null {
     newCardIds: Array.isArray(session.newCardIds) ? session.newCardIds : [],
     dupCardIds: Array.isArray(session.dupCardIds) ? session.dupCardIds : [],
     revealedCardIds: Array.isArray(session.revealedCardIds) ? session.revealedCardIds : [],
+    awardedUpfront: session.awardedUpfront === true,
   };
 }
 
@@ -305,53 +327,49 @@ export async function handlePackReveal(interaction: ButtonInteraction, client: B
         });
         if (advanced.count !== 1) throw new Error('PACK_ALREADY_ADVANCED');
 
-        await tx.card.upsert({
-          where: { id: card.id },
-          update: { marketValue },
-          create: {
-            id: card.id,
-            name: card.name,
-            supertype: 'Pokémon',
-            subtypes: card.subtypes ?? [],
-            types: card.types ?? [],
-            setId: session.setId,
-            setName: session.setName,
-            number: card.number,
-            rarity: card.rarity,
-            imageSmall: card.imageSmall ?? null,
-            imageLarge: card.imageLarge ?? null,
-            marketValue,
-          },
-        });
-
-        await tx.userCard.upsert({
-          where: { userId_cardId_isFoil: { userId: session.userId, cardId: card.id, isFoil: false } },
-          update: { quantity: { increment: 1 } },
-          create: { userId: session.userId, cardId: card.id, quantity: 1, isFoil: false },
-        });
-
-        await tx.user.update({
-          where: { id: session.userId },
-          data: { cardsCollected: { increment: 1 } },
-        });
-
-        if (isLastCard) {
-          await tx.packSession.delete({ where: { sessionId } });
+        // Legacy sessions created before upfront awarding still grant on reveal.
+        if (!session.awardedUpfront) {
+          await tx.card.upsert({
+            where: { id: card.id },
+            update: {
+              imageSmall: card.imageSmall ?? undefined,
+              imageLarge: card.imageLarge ?? undefined,
+              marketValue,
+            },
+            create: {
+              id: card.id,
+              name: card.name,
+              supertype: 'Pokémon',
+              subtypes: card.subtypes ?? [],
+              types: card.types ?? [],
+              setId: session.setId,
+              setName: session.setName,
+              number: card.number,
+              rarity: card.rarity,
+              imageSmall: card.imageSmall ?? null,
+              imageLarge: card.imageLarge ?? null,
+              marketValue,
+            },
+          });
+          await tx.userCard.upsert({
+            where: { userId_cardId_isFoil: { userId: session.userId, cardId: card.id, isFoil: false } },
+            update: { quantity: { increment: 1 } },
+            create: { userId: session.userId, cardId: card.id, quantity: 1, isFoil: false },
+          });
+          await tx.user.update({
+            where: { id: session.userId },
+            data: { cardsCollected: { increment: 1 } },
+          });
         }
       });
 
       if (isLastCard) {
-        // Delete session — pack is done
-        if (client.redis?.isReady) await client.redis.del(packSessionRedisKey(sessionId)).catch(() => {});
-
-        // Check if user has more packs
-        const hasMore = await client.prisma.userInventory.findFirst({
-          where: { userId: session.userId, itemId: { startsWith: 'pack:' }, quantity: { gt: 0 } },
-        });
-
+        // Keep the final card visible. The player explicitly advances to the
+        // summary, avoiding the appearance that the rare pull "vanished".
+        await cachePackSession(client, sessionId, session);
         await interaction.editReply({
-          embeds: [buildSummaryEmbed(session)],
-          components: [summaryButtons(session.userId, !!hasMore)],
+          embeds: [buildRevealEmbed(session, card, cardNum)],
+          components: [finishButton(sessionId)],
         }).catch(() => {});
       } else {
         // Update cache after the canonical DB transaction succeeds.
@@ -374,7 +392,7 @@ export async function handlePackReveal(interaction: ButtonInteraction, client: B
       // Persist remaining cards (those not yet revealed) to the user's collection to avoid data loss
       const remaining = session.cards.slice(session.currentIndex);
       try {
-        await client.prisma.$transaction(async (tx) => {
+        if (!session.awardedUpfront) await client.prisma.$transaction(async (tx) => {
           for (const c of remaining) {
             await tx.card.upsert({
               where: { id: c.id },
@@ -420,7 +438,10 @@ export async function handlePackReveal(interaction: ButtonInteraction, client: B
 
       // Notify user
       try {
-        await interaction.followUp({ content: `⚠️ Pack session closed due to an error. Remaining ${remaining.length} card(s) were added to your collection.`, ephemeral: true }).catch(() => {});
+        const ownershipMessage = session.awardedUpfront
+          ? 'All cards from this pack are already safe in your collection.'
+          : `Remaining ${remaining.length} card(s) were added to your collection.`;
+        await interaction.followUp({ content: `⚠️ Pack session closed due to an error. ${ownershipMessage}`, ephemeral: true }).catch(() => {});
       } catch { /* ignore */ }
     }
   } catch (err) {
@@ -429,29 +450,60 @@ export async function handlePackReveal(interaction: ButtonInteraction, client: B
   }
 }
 
-// Called from interactionCreate for pack_open_another:* buttons
-export async function handlePackOpenAnother(interaction: ButtonInteraction, _client: BotClient) {
-  if (interaction.user.id !== interaction.customId.split(':')[1]) {
-    await interaction.reply({ content: '❌ Not your session.', ephemeral: true });
+export async function handlePackFinish(interaction: ButtonInteraction, client: BotClient, sessionId: string) {
+  await interaction.deferUpdate();
+  const session = await getPackSession(client, sessionId);
+  if (!session || session.currentIndex < session.cards.length) {
+    await interaction.editReply({
+      content: '❌ This pack is no longer ready for results.',
+      embeds: [],
+      components: [],
+    }).catch(() => {});
     return;
   }
-  // Redirect user to /pack open — we can't invoke slash commands, so just inform
-  await interaction.reply({
-    content: '📦 Use `/pack open` to pick your next pack!',
-    ephemeral: true,
+  if (interaction.user.id !== session.userId) {
+    await interaction.followUp({ content: '❌ This is not your pack.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  const hasMore = await client.prisma.userInventory.findFirst({
+    where: { userId: session.userId, itemId: { startsWith: 'pack:' }, quantity: { gt: 0 } },
+  });
+  await deletePackSession(client, sessionId);
+  await interaction.editReply({
+    embeds: [buildSummaryEmbed(session)],
+    components: [summaryButtons(session.userId, !!hasMore)],
   });
 }
 
-// Called from interactionCreate for pack_view_collection:* buttons
-export async function handlePackViewCollection(interaction: ButtonInteraction, _client: BotClient) {
+// Called from interactionCreate for pack_open_another:* buttons
+export async function handlePackOpenAnother(interaction: ButtonInteraction, client: BotClient) {
   if (interaction.user.id !== interaction.customId.split(':')[1]) {
     await interaction.reply({ content: '❌ Not your session.', ephemeral: true });
     return;
   }
-  await interaction.reply({
-    content: '📖 Use `/collection` to view your card collection!',
-    ephemeral: true,
-  });
+  const { buildPackSelectionView } = await import('../commands/cards/pack.js');
+  await interaction.deferUpdate();
+  const view = await buildPackSelectionView(client, interaction.user.id, true);
+  await interaction.editReply(view);
+}
+
+// Called from interactionCreate for pack_view_collection:* buttons
+export async function handlePackViewCollection(interaction: ButtonInteraction, client: BotClient) {
+  if (interaction.user.id !== interaction.customId.split(':')[1]) {
+    await interaction.reply({ content: '❌ Not your session.', ephemeral: true });
+    return;
+  }
+  const { buildCardCollectionView } = await import('../commands/cards/collection.js');
+  await interaction.deferUpdate();
+  const view = await buildCardCollectionView(
+    client,
+    interaction.user.id,
+    interaction.user.username,
+    interaction.user.displayAvatarURL(),
+    true,
+  );
+  await interaction.editReply(view);
 }
 
 // Creates a new pack session in Postgres, caches it in Redis when available,
@@ -467,16 +519,22 @@ export async function createPackSession(
 ): Promise<{ sessionId: string; embed: EmbedBuilder; row: ActionRowBuilder<ButtonBuilder> }> {
   const sessionId = `${userId}-${Date.now()}`;
 
+  const preparedCards = cards.map((card) => ({
+    ...card,
+    imageLarge: resolveCardImage(card, setId),
+    marketValue: card.marketValue ?? calculateMarketValue(card.rarity, setId, card.name),
+  }));
   const session: PackSession = {
     userId,
     setName,
     setId,
     setLogoUrl,
-    cards,
+    cards: preparedCards,
     currentIndex: 0,
-    newCardIds: cards.filter((c) => c.isNew).map((c) => c.id),
-    dupCardIds: cards.filter((c) => !c.isNew).map((c) => c.id),
+    newCardIds: preparedCards.filter((c) => c.isNew).map((c) => c.id),
+    dupCardIds: preparedCards.filter((c) => !c.isNew).map((c) => c.id),
     revealedCardIds: [],
+    awardedUpfront: true,
   };
 
   // Respect server pack cooldown when creating a session (prevent spam opening)
@@ -488,17 +546,59 @@ export async function createPackSession(
     }
   } catch { /* non-fatal */ }
 
-  await client.prisma.packSession.create({
-    data: {
-      sessionId,
-      userId,
-      guildId,
-      setId,
-      setName,
-      cards: serializePackSession(session),
-      currentIndex: 0,
-      expiresAt: new Date(Date.now() + PACK_SESSION_TTL_SECONDS * 1000),
-    },
+  await client.prisma.$transaction(async (tx) => {
+    for (const card of preparedCards) {
+      await tx.card.upsert({
+        where: { id: card.id },
+        update: {
+          name: card.name,
+          subtypes: card.subtypes ?? [],
+          types: card.types ?? [],
+          setId,
+          setName,
+          number: card.number,
+          rarity: card.rarity,
+          imageSmall: card.imageSmall ?? null,
+          imageLarge: card.imageLarge ?? null,
+          marketValue: card.marketValue,
+        },
+        create: {
+          id: card.id,
+          name: card.name,
+          supertype: 'Pokémon',
+          subtypes: card.subtypes ?? [],
+          types: card.types ?? [],
+          setId,
+          setName,
+          number: card.number,
+          rarity: card.rarity,
+          imageSmall: card.imageSmall ?? null,
+          imageLarge: card.imageLarge ?? null,
+          marketValue: card.marketValue,
+        },
+      });
+      await tx.userCard.upsert({
+        where: { userId_cardId_isFoil: { userId, cardId: card.id, isFoil: false } },
+        update: { quantity: { increment: 1 }, obtainedAt: new Date() },
+        create: { userId, cardId: card.id, quantity: 1, isFoil: false },
+      });
+    }
+    await tx.user.update({
+      where: { id: userId },
+      data: { cardsCollected: { increment: preparedCards.length } },
+    });
+    await tx.packSession.create({
+      data: {
+        sessionId,
+        userId,
+        guildId,
+        setId,
+        setName,
+        cards: serializePackSession(session),
+        currentIndex: 0,
+        expiresAt: new Date(Date.now() + PACK_SESSION_TTL_SECONDS * 1000),
+      },
+    });
   });
   // Clean up locks left by older deployments. Current reveals rely on the
   // PostgreSQL currentIndex compare-and-swap and do not create this key.

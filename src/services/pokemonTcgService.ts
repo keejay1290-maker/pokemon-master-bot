@@ -4,6 +4,37 @@ import { getPackTier, getTierConfig, type PackTier } from '../config/pack-tiers.
 
 const TCG_BASE = 'https://api.pokemontcg.io/v2';
 const CACHE_TTL = 3600;
+const API_TIMEOUT_MS = 10_000;
+const API_ATTEMPTS = 3;
+
+async function cacheGet(client: BotClient, key: string): Promise<string | null> {
+  if (!client.redis?.isReady) return null;
+  return client.redis.get(key).catch(() => null);
+}
+
+async function cacheSet(client: BotClient, key: string, value: unknown, ttl: number): Promise<void> {
+  if (!client.redis?.isReady) return;
+  await client.redis.set(key, JSON.stringify(value), { EX: ttl }).catch(() => {});
+}
+
+async function tcgGet(path: string, params?: Record<string, unknown>) {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= API_ATTEMPTS; attempt++) {
+    try {
+      return await axios.get(`${TCG_BASE}${path}`, {
+        params,
+        timeout: API_TIMEOUT_MS,
+        headers: { 'X-Api-Key': process.env.POKEMON_TCG_API_KEY },
+      });
+    } catch (error) {
+      lastError = error;
+      if (attempt < API_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 300));
+      }
+    }
+  }
+  throw lastError;
+}
 
 // Maximum rarity allowed per tier — tiers with higher costs get access to higher rarities
 const TIER_RARITY_CAPS: Record<PackTier, number> = {
@@ -31,14 +62,12 @@ const RARITY_ORDER: Record<string, number> = {
 
 export async function fetchCard(client: BotClient, cardId: string): Promise<Record<string, unknown> | null> {
   const key = `tcg:card:${cardId}`;
-  const cached = await client.redis.get(key);
+  const cached = await cacheGet(client, key);
   if (cached) return JSON.parse(cached);
 
   try {
-    const { data } = await axios.get(`${TCG_BASE}/cards/${cardId}`, {
-      headers: { 'X-Api-Key': process.env.POKEMON_TCG_API_KEY },
-    });
-    await client.redis.set(key, JSON.stringify(data.data), { EX: CACHE_TTL });
+    const { data } = await tcgGet(`/cards/${cardId}`);
+    await cacheSet(client, key, data.data, CACHE_TTL);
     return data.data;
   } catch {
     return null;
@@ -52,16 +81,13 @@ export async function searchCards(
   pageSize = 10
 ): Promise<{ data: Record<string, unknown>[]; totalCount: number }> {
   const key = `tcg:search:${query}:${page}:${pageSize}`;
-  const cached = await client.redis.get(key);
+  const cached = await cacheGet(client, key);
   if (cached) return JSON.parse(cached);
 
   try {
-    const { data } = await axios.get(`${TCG_BASE}/cards`, {
-      params: { q: query, page, pageSize, orderBy: '-set.releaseDate' },
-      headers: { 'X-Api-Key': process.env.POKEMON_TCG_API_KEY },
-    });
+    const { data } = await tcgGet('/cards', { q: query, page, pageSize, orderBy: '-set.releaseDate' });
     const result = { data: data.data, totalCount: data.totalCount };
-    await client.redis.set(key, JSON.stringify(result), { EX: CACHE_TTL });
+    await cacheSet(client, key, result, CACHE_TTL);
     return result;
   } catch {
     return { data: [], totalCount: 0 };
@@ -70,15 +96,12 @@ export async function searchCards(
 
 export async function fetchSets(client: BotClient): Promise<Record<string, unknown>[]> {
   const key = 'tcg:sets';
-  const cached = await client.redis.get(key);
+  const cached = await cacheGet(client, key);
   if (cached) return JSON.parse(cached);
 
   try {
-    const { data } = await axios.get(`${TCG_BASE}/sets`, {
-      params: { orderBy: '-releaseDate' },
-      headers: { 'X-Api-Key': process.env.POKEMON_TCG_API_KEY },
-    });
-    await client.redis.set(key, JSON.stringify(data.data), { EX: CACHE_TTL * 24 });
+    const { data } = await tcgGet('/sets', { orderBy: '-releaseDate' });
+    await cacheSet(client, key, data.data, CACHE_TTL * 24);
     return data.data;
   } catch {
     return [];

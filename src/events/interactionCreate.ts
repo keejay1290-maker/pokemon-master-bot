@@ -3,6 +3,7 @@ import {
   ChatInputCommandInteraction,
   AutocompleteInteraction,
   ButtonInteraction,
+  StringSelectMenuInteraction,
 } from 'discord.js';
 import type { BotClient } from '../types/index.js';
 import { errorEmbed } from '../utils/embeds.js';
@@ -10,6 +11,7 @@ import { ensureUser } from '../services/userService.js';
 import { ensureGuild } from '../services/guildService.js';
 import {
   handlePackReveal,
+  handlePackFinish,
   handlePackOpenAnother,
   handlePackViewCollection,
 } from '../handlers/packRevealHandler.js';
@@ -21,6 +23,8 @@ export async function handleInteractionCreate(interaction: Interaction, client: 
     await handleAutocomplete(interaction, client);
   } else if (interaction.isButton()) {
     await handleButton(interaction, client);
+  } else if (interaction.isStringSelectMenu()) {
+    await handleStringSelect(interaction, client);
   }
 }
 
@@ -31,6 +35,9 @@ async function handleButton(interaction: ButtonInteraction, client: BotClient) {
     if (id.startsWith('pack_reveal:')) {
       const sessionId = id.slice('pack_reveal:'.length);
       await handlePackReveal(interaction, client, sessionId);
+    } else if (id.startsWith('pack_finish:')) {
+      const sessionId = id.slice('pack_finish:'.length);
+      await handlePackFinish(interaction, client, sessionId);
     } else if (id.startsWith('pack_open_another:')) {
       await handlePackOpenAnother(interaction, client);
     } else if (id.startsWith('pack_view_collection:')) {
@@ -43,6 +50,18 @@ async function handleButton(interaction: ButtonInteraction, client: BotClient) {
       await interaction.reply({ content: '❌ An error occurred.', ephemeral: true }).catch(() => {});
     }
   }
+}
+
+async function handleStringSelect(interaction: StringSelectMenuInteraction, client: BotClient) {
+  if (!interaction.customId.startsWith('pack_continue_select:')) return;
+  const ownerId = interaction.customId.slice('pack_continue_select:'.length);
+  if (interaction.user.id !== ownerId) {
+    await interaction.reply({ content: '❌ This pack picker belongs to another trainer.', ephemeral: true });
+    return;
+  }
+  await interaction.deferUpdate();
+  const { openSelectedPack } = await import('../commands/cards/pack.js');
+  await openSelectedPack(interaction, client, interaction.values[0]);
 }
 
 async function handleCommand(interaction: ChatInputCommandInteraction, client: BotClient) {
