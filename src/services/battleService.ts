@@ -4,6 +4,7 @@ import { PrismaClient, type Prisma } from '@prisma/client';
 import { addXp, creditBalanceInTransaction } from './userService.js';
 import { checkAndAwardAchievements } from './achievementService.js';
 import { incrementQuestProgress } from './questService.js';
+import { transferRankedBattleStakes } from './rankedBattleService.js';
 
 // Lookup table for common moves. Battle uses this to get real power + category.
 // Unknown moves default to Normal/Physical/50.
@@ -89,16 +90,25 @@ export function getMoveData(moveName: string): MoveData {
 
 export async function loadBattleTeam(
   prisma: PrismaClient,
-  userId: string
+  userId: string,
+  selectedOwnershipIds?: string[],
 ): Promise<BattlePokemon[]> {
   const teamPokemon = await prisma.userPokemon.findMany({
-    where: { userId, isInTeam: true },
+    where: selectedOwnershipIds
+      ? { userId, id: { in: selectedOwnershipIds } }
+      : { userId, isInTeam: true },
     include: { pokemon: true },
     orderBy: { teamSlot: 'asc' },
     take: 6,
   });
 
-  if (teamPokemon.length === 0) {
+  if (selectedOwnershipIds) {
+    const byId = new Map(teamPokemon.map((pokemon) => [pokemon.id, pokemon]));
+    const ordered = selectedOwnershipIds
+      .map((id) => byId.get(id))
+      .filter((pokemon): pokemon is typeof teamPokemon[number] => Boolean(pokemon));
+    teamPokemon.splice(0, teamPokemon.length, ...ordered);
+  } else if (teamPokemon.length === 0) {
     const firstPokemon = await prisma.userPokemon.findFirst({
       where: { userId },
       include: { pokemon: true },
@@ -352,6 +362,7 @@ export interface BattleRewards {
   loserXp: number;
   rankedGain: number;
   rankedLoss: number;
+  transferredPokemon: number;
 }
 
 export function calculateBattleRewards(state: BattleState): BattleRewards {
@@ -364,11 +375,30 @@ export function calculateBattleRewards(state: BattleState): BattleRewards {
     loserXp: 25 + teamSize * 10 + Math.min(state.turn, 30),
     rankedGain: isRanked ? 25 : 0,
     rankedLoss: isRanked ? 15 : 0,
+    transferredPokemon: 0,
   };
 }
 
 function battleTeamJson(team: BattlePokemon[]): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(team)) as Prisma.InputJsonValue;
+}
+
+export async function persistBattleState(client: BotClient, state: BattleState): Promise<void> {
+  await Promise.all([
+    client.prisma.battle.updateMany({
+      where: { id: state.id, status: 'active' },
+      data: {
+        state: JSON.parse(JSON.stringify(state)) as Prisma.InputJsonValue,
+        challengerTeam: battleTeamJson(state.challengerTeam),
+        opponentTeam: battleTeamJson(state.opponentTeam),
+        battleLog: state.battleLog,
+        turns: state.turn,
+      },
+    }),
+    client.redis?.isReady
+      ? client.redis.set(`battle:${state.id}`, JSON.stringify(state), { EX: 1800 }).then(() => undefined)
+      : Promise.resolve(),
+  ]);
 }
 
 export async function saveBattleResult(
@@ -380,20 +410,47 @@ export async function saveBattleResult(
   const rewards = calculateBattleRewards(state);
 
   const recorded = await client.prisma.$transaction(async (tx) => {
+    const losingTeam = loserId === state.challengerId
+      ? state.challengerTeam
+      : state.opponentTeam;
+    let transferredPokemon = 0;
+
     const finished = await tx.battle.updateMany({
-      where: { id: state.id, status: 'active' },
+      where: {
+        id: state.id,
+        status: 'active',
+        ...(state.type === 'ranked'
+          ? { challengerConfirmed: true, opponentConfirmed: true, stakesTransferredAt: null }
+          : {}),
+      },
       data: {
         status: 'finished',
         winnerId,
         turns: state.turn,
         challengerTeam: battleTeamJson(state.challengerTeam),
         opponentTeam: battleTeamJson(state.opponentTeam),
+        state: JSON.parse(JSON.stringify(state)) as Prisma.InputJsonValue,
         battleLog: state.battleLog,
         endedAt: new Date(),
         rankedPointsChange: rewards.rankedGain || null,
       },
     });
     if (finished.count !== 1) return false;
+
+    if (state.type === 'ranked') {
+      const transferred = await transferRankedBattleStakes(
+        tx,
+        state.id,
+        loserId,
+        winnerId,
+        losingTeam,
+      );
+      transferredPokemon = transferred.length;
+      await tx.battle.update({
+        where: { id: state.id },
+        data: { stakesTransferredAt: new Date() },
+      });
+    }
 
     await tx.user.update({
       where: { id: winnerId },
@@ -415,9 +472,11 @@ export async function saveBattleResult(
       type: state.type,
       turns: state.turn,
     });
-    return true;
+    await tx.battleParticipantLock.deleteMany({ where: { battleId: state.id } });
+    return transferredPokemon;
   });
-  if (!recorded) return null;
+  if (recorded === false) return null;
+  rewards.transferredPokemon = recorded;
 
   await Promise.all([
     addXp(client.prisma, winnerId, rewards.winnerXp),

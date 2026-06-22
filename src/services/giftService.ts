@@ -42,15 +42,11 @@ export async function transferPokemonGift(
       if (owned.isFavorite) throw new Error('GIFT_FAVORITE');
       if (owned.isLocked) throw new Error('GIFT_LOCKED');
 
-      const activeBattle = await tx.battle.findFirst({
-        where: {
-          status: 'active',
-          startedAt: { gte: new Date(Date.now() - 15 * 60 * 1000) },
-          OR: [{ challengerId: senderId }, { opponentId: senderId }],
-        },
-        select: { id: true },
+      const battleLock = await tx.battleParticipantLock.findUnique({
+        where: { userId: senderId },
+        select: { battleId: true },
       });
-      if (activeBattle) throw new Error('GIFT_IN_BATTLE');
+      if (battleLock) throw new Error('GIFT_IN_BATTLE');
 
       const activeListing = await tx.marketListing.findFirst({
         where: {

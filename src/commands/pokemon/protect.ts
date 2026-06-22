@@ -45,6 +45,16 @@ const command: Command = {
       await interaction.reply({ content: 'Choose one of your Pokémon from autocomplete.', ephemeral: true });
       return;
     }
+    const battleLock = await client.prisma.battleParticipantLock.findUnique({
+      where: { userId: interaction.user.id },
+    });
+    if (battleLock) {
+      await interaction.reply({
+        content: 'You cannot change Pokémon protection while a battle or ranked challenge is in progress.',
+        ephemeral: true,
+      });
+      return;
+    }
 
     const updated = await client.prisma.userPokemon.update({
       where: { id: owned.id },

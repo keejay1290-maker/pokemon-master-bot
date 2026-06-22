@@ -1,9 +1,9 @@
 import {
   SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType,
+  StringSelectMenuBuilder, Message,
 } from 'discord.js';
 import type { BotClient, Command, BattleState } from '../../types/index.js';
-import type { Prisma } from '@prisma/client';
 import {
   loadBattleTeam,
   calcDamage,
@@ -17,8 +17,16 @@ import {
   statusLabel,
   getEffectiveSpeed,
   type BattleRewards,
+  persistBattleState,
 } from '../../services/battleService.js';
 import { progressBar } from '../../utils/embeds.js';
+import {
+  activateBattleWithTeams,
+  confirmRankedBattleRisk,
+  createBattleWithParticipantLocks,
+  releaseBattleParticipantLocks,
+  RANKED_TEAM_MAX,
+} from '../../services/rankedBattleService.js';
 
 const command: Command = {
   data: new SlashCommandBuilder()
@@ -44,36 +52,90 @@ const command: Command = {
       return;
     }
 
-    const { REDIS_KEYS, REDIS_TTLS, serializeBattle, deserializeBattle } = await import('../../utils/redisKeys.js');
+    const { REDIS_KEYS, REDIS_TTLS, deserializeBattle } = await import('../../utils/redisKeys.js');
     
     const myLockKey = REDIS_KEYS.battleLock(interaction.user.id);
     const opponentLockKey = REDIS_KEYS.battleLock(opponent.id);
+    let battleRecord;
+    try {
+      battleRecord = await createBattleWithParticipantLocks(client.prisma, {
+        challengerId: interaction.user.id,
+        opponentId: opponent.id,
+        guildId: interaction.guild.id,
+        type,
+      });
+    } catch (error) {
+      const message = error instanceof Error && error.message === 'BATTLE_PARTICIPANT_BUSY'
+        ? 'One of these trainers already has a battle or challenge in progress.'
+        : 'Could not reserve this battle. Please try again.';
+      await interaction.reply({ content: `❌ ${message}`, ephemeral: true });
+      return;
+    }
+    await Promise.all([
+      client.redis.set(myLockKey, battleRecord.id, { EX: REDIS_TTLS.BATTLE }).catch(() => {}),
+      client.redis.set(opponentLockKey, battleRecord.id, { EX: REDIS_TTLS.BATTLE }).catch(() => {}),
+    ]);
 
-    // Try to acquire locks
-    const acquiredMe = await client.redis.set(myLockKey, 'pending', { NX: true, EX: 60 });
-    if (!acquiredMe) {
-      await interaction.reply({ content: 'You are already in a battle or have a pending challenge!', ephemeral: true });
+    const challengerCandidates = await getEligibleBattlePokemon(
+      client,
+      interaction.user.id,
+      type,
+    );
+    if (challengerCandidates.length === 0) {
+      await cancelBattleSetup(client, battleRecord.id, [myLockKey, opponentLockKey]);
+      await interaction.reply({ content: '❌ You have no eligible caught Pokémon for this battle.', ephemeral: true });
       return;
     }
 
-    const acquiredThem = await client.redis.set(opponentLockKey, 'pending', { NX: true, EX: 60 });
-    if (!acquiredThem) {
-      await client.redis.del(myLockKey);
-      await interaction.reply({ content: `<@${opponent.id}> is already in a battle or has a pending challenge!`, ephemeral: true });
+    const msg = await interaction.reply({
+      embeds: [buildTeamSelectionEmbed(
+        interaction.user.username,
+        type,
+        'Challenger team selection',
+      )],
+      components: buildTeamSelectionComponents(
+        challengerCandidates,
+        type,
+        `battle_team_challenger:${battleRecord.id}`,
+        0,
+      ),
+      fetchReply: true,
+    });
+    const challengerSelection = await collectTeamSelection(
+      msg,
+      challengerCandidates,
+      interaction.user.id,
+      type,
+      `battle_team_challenger:${battleRecord.id}`,
+      buildTeamSelectionEmbed(interaction.user.username, type, 'Challenger team selection'),
+    );
+    if (!challengerSelection) {
+      await cancelBattleSetup(client, battleRecord.id, [myLockKey, opponentLockKey]);
+      await interaction.editReply({
+        content: '⌛ Team selection expired. No battle was started.',
+        embeds: [],
+        components: [],
+      }).catch(() => {});
       return;
     }
 
-    const challengerTeam = await loadBattleTeam(client.prisma, interaction.user.id);
-    if (challengerTeam.length === 0) {
-      await client.redis.del([myLockKey, opponentLockKey]);
-      await interaction.reply({ content: "You don't have any Pokemon! Use `/catch` first.", ephemeral: true });
+    const challengerTeam = await loadBattleTeam(
+      client.prisma,
+      interaction.user.id,
+      challengerSelection,
+    );
+    if (challengerTeam.length !== challengerSelection.length) {
+      await cancelBattleSetup(client, battleRecord.id, [myLockKey, opponentLockKey]);
+      await interaction.editReply({ content: '❌ Your selected team changed. Start again.', embeds: [], components: [] });
       return;
     }
 
     const embed = new EmbedBuilder()
       .setColor(0xff0000)
       .setTitle('⚔️ Battle Challenge!')
-      .setDescription(`<@${interaction.user.id}> challenges <@${opponent.id}> to a **${type}** Pokemon battle!\n\nDo you accept?`)
+      .setDescription(
+        `<@${interaction.user.id}> selected **${challengerTeam.length} caught Pokémon** and challenges <@${opponent.id}> to a **${type}** battle!\n\nDo you accept?`
+      )
       .addFields(
         { name: 'Challenger', value: `<@${interaction.user.id}>`, inline: true },
         { name: 'Opponent', value: `<@${opponent.id}>`, inline: true },
@@ -86,7 +148,7 @@ const command: Command = {
       new ButtonBuilder().setCustomId('decline').setLabel('Decline').setStyle(ButtonStyle.Danger),
     );
 
-    const msg = await interaction.reply({ embeds: [embed], components: [row], fetchReply: true });
+    await interaction.editReply({ embeds: [embed], components: [row] });
     let challengeResolved = false;
 
     const collector = msg.createMessageComponentCollector({ componentType: ComponentType.Button, time: 60000 });
@@ -101,31 +163,100 @@ const command: Command = {
       collector.stop();
 
       if (btn.customId === 'decline') {
-        await client.redis.del([myLockKey, opponentLockKey]);
+        await cancelBattleSetup(client, battleRecord.id, [myLockKey, opponentLockKey]);
         await btn.update({ embeds: [new EmbedBuilder().setColor(0x808080).setTitle('❌ Battle Declined')], components: [] });
         return;
       }
 
-      // Start the battle
-      const opponentTeam = await loadBattleTeam(client.prisma, opponent.id);
-      if (opponentTeam.length === 0) {
-        await client.redis.del([myLockKey, opponentLockKey]);
-        await btn.update({ content: `<@${opponent.id}> has no Pokemon!`, embeds: [], components: [] });
+      const opponentCandidates = await getEligibleBattlePokemon(
+        client,
+        opponent.id,
+        type,
+      );
+      if (opponentCandidates.length === 0) {
+        await cancelBattleSetup(client, battleRecord.id, [myLockKey, opponentLockKey]);
+        await btn.update({ content: `<@${opponent.id}> has no eligible caught Pokémon.`, embeds: [], components: [] });
+        return;
+      }
+      await btn.update({
+        embeds: [buildTeamSelectionEmbed(opponent.username, type, 'Opponent team selection')],
+        components: buildTeamSelectionComponents(
+          opponentCandidates,
+          type,
+          `battle_team_opponent:${battleRecord.id}`,
+          0,
+        ),
+      });
+      const opponentSelection = await collectTeamSelection(
+        msg,
+        opponentCandidates,
+        opponent.id,
+        type,
+        `battle_team_opponent:${battleRecord.id}`,
+        buildTeamSelectionEmbed(opponent.username, type, 'Opponent team selection'),
+      );
+      if (!opponentSelection) {
+        await cancelBattleSetup(client, battleRecord.id, [myLockKey, opponentLockKey]);
+        await interaction.editReply({
+          content: '⌛ Opponent team selection expired. No battle was started.',
+          embeds: [],
+          components: [],
+        }).catch(() => {});
+        return;
+      }
+      const opponentTeam = await loadBattleTeam(client.prisma, opponent.id, opponentSelection);
+      if (opponentTeam.length !== opponentSelection.length) {
+        await cancelBattleSetup(client, battleRecord.id, [myLockKey, opponentLockKey]);
+        await interaction.editReply({ content: '❌ The opponent team changed. Start again.', embeds: [], components: [] });
         return;
       }
 
-      const battleRecord = await client.prisma.battle.create({
-        data: {
-          challengerId: interaction.user.id,
-          opponentId: opponent.id,
-          guildId: interaction.guild!.id,
-          type,
-          status: 'active',
-          challengerTeam: JSON.parse(JSON.stringify(challengerTeam)) as Prisma.InputJsonValue,
-          opponentTeam: JSON.parse(JSON.stringify(opponentTeam)) as Prisma.InputJsonValue,
-          startedAt: new Date(),
-        },
-      });
+      if (type === 'ranked') {
+        await client.prisma.battle.update({
+          where: { id: battleRecord.id },
+          data: {
+            status: 'confirming',
+            challengerTeam: JSON.parse(JSON.stringify(challengerTeam)),
+            opponentTeam: JSON.parse(JSON.stringify(opponentTeam)),
+          },
+        });
+        const confirmed = await collectRankedConfirmations(
+          client,
+          msg,
+          battleRecord.id,
+          interaction.user.id,
+          opponent.id,
+          challengerTeam,
+          opponentTeam,
+        );
+        if (!confirmed) {
+          await cancelBattleSetup(client, battleRecord.id, [myLockKey, opponentLockKey]);
+          await interaction.editReply({
+            content: 'Ranked battle cancelled. No Pokémon changed ownership.',
+            embeds: [],
+            components: [],
+          }).catch(() => {});
+          return;
+        }
+      } else {
+        await client.prisma.battle.update({
+          where: { id: battleRecord.id },
+          data: { challengerConfirmed: true, opponentConfirmed: true },
+        });
+      }
+
+      try {
+        await activateBattleWithTeams(client.prisma, battleRecord.id, challengerTeam, opponentTeam);
+      } catch (error) {
+        await cancelBattleSetup(client, battleRecord.id, [myLockKey, opponentLockKey]);
+        client.logger.error('Battle activation failed', error);
+        await interaction.editReply({
+          content: '❌ A selected Pokémon became ineligible. No battle or transfer occurred.',
+          embeds: [],
+          components: [],
+        }).catch(() => {});
+        return;
+      }
 
       // Persist canonical lastBattle timestamp for cooldowns
       try {
@@ -167,7 +298,7 @@ const command: Command = {
       const battleKey = REDIS_KEYS.battle(state.id);
       await client.redis.set(myLockKey, 'active', { EX: REDIS_TTLS.BATTLE });
       await client.redis.set(opponentLockKey, 'active', { EX: REDIS_TTLS.BATTLE });
-      await client.redis.set(battleKey, serializeBattle(state), { EX: REDIS_TTLS.BATTLE });
+      await persistBattleState(client, state);
 
       const battleEmbed = buildBattleEmbed(state, interaction.user.username, opponent.username);
       const battleRow = buildBattleRow(state);
@@ -184,7 +315,7 @@ const command: Command = {
             // Add timeout warning to battle log
             const currentTurnName = s.currentTurnUserId === s.challengerId ? interaction.user.username : opponent.username;
             s.battleLog.push(`⏰ **Timeout warning:** ${currentTurnName} has 60 seconds to act!`);
-            await client.redis.set(battleKey, serializeBattle(s), { EX: REDIS_TTLS.BATTLE });
+            await persistBattleState(client, s);
             
             // Try to update the embed with the warning
             try {
@@ -301,7 +432,7 @@ const command: Command = {
               }
               currentState.turn++;
               currentState.currentTurnUserId = advanceTurn(currentState, isChallenger);
-              await client.redis.set(battleKey, serializeBattle(currentState), { EX: REDIS_TTLS.BATTLE });
+              await persistBattleState(client, currentState);
               await moveBtn.update({ embeds: [buildBattleEmbed(currentState, challengerName, opponentName)], components: [buildBattleRow(currentState)] });
               return;
             }
@@ -313,7 +444,7 @@ const command: Command = {
           if (blockResult.blocked) {
             currentState.turn++;
             currentState.currentTurnUserId = advanceTurn(currentState, isChallenger);
-            await client.redis.set(battleKey, serializeBattle(currentState), { EX: REDIS_TTLS.BATTLE });
+            await persistBattleState(client, currentState);
             await moveBtn.update({ embeds: [buildBattleEmbed(currentState, challengerName, opponentName)], components: [buildBattleRow(currentState)] });
             return;
           }
@@ -329,7 +460,7 @@ const command: Command = {
             currentState.battleLog.push(`${attacker.name} used **${moveName}**... but it missed!`);
             currentState.turn++;
             currentState.currentTurnUserId = advanceTurn(currentState, isChallenger);
-            await client.redis.set(battleKey, serializeBattle(currentState), { EX: REDIS_TTLS.BATTLE });
+            await persistBattleState(client, currentState);
             await moveBtn.update({ embeds: [buildBattleEmbed(currentState, challengerName, opponentName)], components: [buildBattleRow(currentState)] });
             return;
           }
@@ -400,7 +531,7 @@ const command: Command = {
             currentState.battleLog = currentState.battleLog.slice(-8);
           }
 
-          await client.redis.set(battleKey, serializeBattle(currentState), { EX: REDIS_TTLS.BATTLE });
+          await persistBattleState(client, currentState);
 
           const updatedEmbed = buildBattleEmbed(currentState, challengerName, opponentName);
           const updatedRow = buildBattleRow(currentState);
@@ -416,7 +547,7 @@ const command: Command = {
     // eslint-disable-next-line @typescript-eslint/no-misused-promises
     collector.on('end', async (_, reason) => {
       if (!challengeResolved || reason === 'time') {
-        await client.redis.del([myLockKey, opponentLockKey]);
+        await cancelBattleSetup(client, battleRecord.id, [myLockKey, opponentLockKey]);
         interaction.editReply({ embeds: [new EmbedBuilder().setColor(0x808080).setTitle('⏰ Challenge Expired')], components: [] }).catch(() => {});
       }
     });
@@ -502,6 +633,13 @@ function buildBattleEndEmbed(
         ? [{ name: '🏅 Ranked Points', value: `Winner +${rewards.rankedGain}\nOpponent -${rewards.rankedLoss}`, inline: true }]
         : []),
     );
+    if (rewards.transferredPokemon > 0) {
+      embed.addFields({
+        name: '⚠️ Ranked Stakes Transferred',
+        value: `The winner received **${rewards.transferredPokemon} caught Pokémon** used by the losing team.`,
+        inline: false,
+      });
+    }
   }
   return embed;
 }
@@ -540,6 +678,252 @@ function buildBattleRow(state: BattleState): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     buttons
   );
+}
+
+interface BattleSelectionCandidate {
+  id: string;
+  nickname: string | null;
+  level: number;
+  isShiny: boolean;
+  currentHp: number | null;
+  pokemon: {
+    nameDisplay: string;
+    hp: number;
+    type1: string;
+    type2: string | null;
+    rarity: string;
+  };
+}
+
+async function getEligibleBattlePokemon(
+  client: BotClient,
+  userId: string,
+  type: 'ranked' | 'unranked',
+): Promise<BattleSelectionCandidate[]> {
+  const candidates = await client.prisma.userPokemon.findMany({
+    where: {
+      userId,
+      OR: [{ currentHp: null }, { currentHp: { gt: 0 } }],
+      ...(type === 'ranked' ? { isLocked: false, isFavorite: false } : {}),
+    },
+    include: { pokemon: true },
+    orderBy: [{ isInTeam: 'desc' }, { level: 'desc' }, { caughtAt: 'desc' }],
+    take: 100,
+  });
+  if (candidates.length === 0) return [];
+
+  const listed = await client.prisma.marketListing.findMany({
+    where: { sellerId: userId, status: 'active' },
+    select: { itemData: true },
+  });
+  const listedIds = new Set(listed.flatMap((listing) => {
+    const data = listing.itemData as { userPokemonId?: string };
+    return data.userPokemonId ? [data.userPokemonId] : [];
+  }));
+  const eligible = candidates.filter((pokemon) => !listedIds.has(pokemon.id));
+  return eligible;
+}
+
+function buildTeamSelectionComponents(
+  eligible: BattleSelectionCandidate[],
+  type: 'ranked' | 'unranked',
+  prefix: string,
+  page: number,
+) {
+  const pageSize = 25;
+  const totalPages = Math.max(1, Math.ceil(eligible.length / pageSize));
+  const safePage = Math.max(0, Math.min(page, totalPages - 1));
+  const pagePokemon = eligible.slice(safePage * pageSize, (safePage + 1) * pageSize);
+  const maxValues = Math.min(
+    type === 'ranked' ? RANKED_TEAM_MAX : 6,
+    pagePokemon.length,
+  );
+  const selectRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`${prefix}:select`)
+      .setPlaceholder(`Choose team • Page ${safePage + 1}/${totalPages}`)
+      .setMinValues(1)
+      .setMaxValues(maxValues)
+      .addOptions(pagePokemon.map((owned) => {
+        const displayName = owned.nickname ?? owned.pokemon.nameDisplay;
+        const hp = owned.currentHp ?? owned.pokemon.hp;
+        const types = [owned.pokemon.type1, owned.pokemon.type2].filter(Boolean).join('/');
+        return {
+          label: `${owned.isShiny ? '✨ ' : ''}${displayName} • Lv.${owned.level}`.slice(0, 100),
+          description: `HP ${hp} • ${types} • ${owned.pokemon.rarity}`.slice(0, 100),
+          value: owned.id,
+        };
+      })),
+  );
+  if (totalPages === 1) return [selectRow];
+  const navigation = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${prefix}:prev`)
+      .setLabel('Previous')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(safePage === 0),
+    new ButtonBuilder()
+      .setCustomId(`${prefix}:next`)
+      .setLabel('Next')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(safePage >= totalPages - 1),
+    new ButtonBuilder()
+      .setCustomId(`${prefix}:cancel`)
+      .setLabel('Cancel')
+      .setStyle(ButtonStyle.Danger),
+  );
+  return [selectRow, navigation];
+}
+
+async function collectTeamSelection(
+  message: Message,
+  eligible: BattleSelectionCandidate[],
+  userId: string,
+  type: 'ranked' | 'unranked',
+  prefix: string,
+  embed: EmbedBuilder,
+): Promise<string[] | null> {
+  let page = 0;
+  return new Promise((resolve) => {
+    const collector = message.createMessageComponentCollector({
+      filter: (component) => component.user.id === userId && component.customId.startsWith(prefix),
+      time: 120_000,
+    });
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises
+    collector.on('collect', async (component) => {
+      if (component.isStringSelectMenu() && component.customId === `${prefix}:select`) {
+        await component.deferUpdate();
+        collector.stop('selected');
+        resolve(component.values);
+        return;
+      }
+      if (!component.isButton()) return;
+      if (component.customId === `${prefix}:cancel`) {
+        await component.deferUpdate();
+        collector.stop('cancelled');
+        resolve(null);
+        return;
+      }
+      page += component.customId === `${prefix}:next` ? 1 : -1;
+      await component.update({
+        embeds: [embed],
+        components: buildTeamSelectionComponents(eligible, type, prefix, page),
+      });
+    });
+    collector.on('end', (_collected, reason) => {
+      if (!['selected', 'cancelled'].includes(reason)) resolve(null);
+    });
+  });
+}
+
+function buildTeamSelectionEmbed(
+  trainerName: string,
+  type: 'ranked' | 'unranked',
+  stage: string,
+): EmbedBuilder {
+  const max = type === 'ranked' ? RANKED_TEAM_MAX : 6;
+  return new EmbedBuilder()
+    .setColor(type === 'ranked' ? 0xff8c00 : 0x3498db)
+    .setTitle(`⚔️ ${stage}`)
+    .setDescription(
+      `**${trainerName}**, select **1–${max} caught Pokémon**.\n` +
+      'Only Pokémon captured in this Discord bot are available. TCG collection cards cannot battle.'
+    )
+    .setFooter({ text: 'Names, levels, HP, and types are shown—no IDs required.' });
+}
+
+async function collectRankedConfirmations(
+  client: BotClient,
+  message: Message,
+  battleId: string,
+  challengerId: string,
+  opponentId: string,
+  challengerTeam: BattleState['challengerTeam'],
+  opponentTeam: BattleState['opponentTeam'],
+): Promise<boolean> {
+  const confirmed = new Set<string>();
+  const warning = () => new EmbedBuilder()
+    .setColor(0xff3300)
+    .setTitle('⚠️ Ranked Battle — Pokémon At Risk')
+    .setDescription(
+      '**Ranked battles are high-stakes. Pokémon used in this battle will transfer to the winner if you lose.**\n\n' +
+      'This applies only to caught Pokédex Pokémon selected below. TCG collection cards are never included.'
+    )
+    .addFields(
+      {
+        name: 'Challenger team',
+        value: challengerTeam.map((pokemon) => `${pokemon.isShiny ? '✨ ' : ''}${pokemon.name} • Lv.${pokemon.level}`).join('\n'),
+        inline: true,
+      },
+      {
+        name: 'Opponent team',
+        value: opponentTeam.map((pokemon) => `${pokemon.isShiny ? '✨ ' : ''}${pokemon.name} • Lv.${pokemon.level}`).join('\n'),
+        inline: true,
+      },
+      {
+        name: 'Confirmation',
+        value: `<@${challengerId}> ${confirmed.has(challengerId) ? '✅' : '⏳'}\n<@${opponentId}> ${confirmed.has(opponentId) ? '✅' : '⏳'}`,
+      },
+    )
+    .setFooter({ text: 'Both trainers must explicitly accept the irreversible stakes.' });
+  const controls = () => new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`ranked_confirm:${battleId}`)
+      .setLabel('Accept Ranked Risk')
+      .setEmoji('⚔️')
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId(`ranked_cancel:${battleId}`)
+      .setLabel('Cancel')
+      .setStyle(ButtonStyle.Secondary),
+  );
+
+  await message.edit({ embeds: [warning()], components: [controls()] });
+  return new Promise((resolve) => {
+    const collector = message.createMessageComponentCollector({
+      componentType: ComponentType.Button,
+      time: 120_000,
+    });
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises
+    collector.on('collect', async (button) => {
+      if (![challengerId, opponentId].includes(button.user.id)) {
+        await button.reply({ content: 'Only the two trainers can confirm this battle.', ephemeral: true });
+        return;
+      }
+      if (button.customId === `ranked_cancel:${battleId}`) {
+        await button.deferUpdate();
+        collector.stop('cancelled');
+        return;
+      }
+      if (button.customId !== `ranked_confirm:${battleId}`) return;
+      await button.deferUpdate();
+      if (!confirmed.has(button.user.id)) {
+        await confirmRankedBattleRisk(client.prisma, battleId, button.user.id);
+        confirmed.add(button.user.id);
+      }
+      if (confirmed.size === 2) {
+        collector.stop('confirmed');
+      } else {
+        await message.edit({ embeds: [warning()], components: [controls()] });
+      }
+    });
+    collector.on('end', (_collected, reason) => resolve(reason === 'confirmed'));
+  });
+}
+
+async function cancelBattleSetup(
+  client: BotClient,
+  battleId: string,
+  redisKeys: string[],
+): Promise<void> {
+  await Promise.all([
+    client.prisma.battle.updateMany({
+      where: { id: battleId, status: { in: ['selecting', 'confirming'] } },
+      data: { status: 'cancelled', endedAt: new Date() },
+    }),
+    releaseBattleParticipantLocks(client.prisma, battleId),
+    client.redis.del(redisKeys).catch(() => 0),
+  ]);
 }
 
 export default command;

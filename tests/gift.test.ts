@@ -30,7 +30,7 @@ describe('Pokémon gifting', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       marketListing: { findFirst: jest.fn().mockResolvedValue(null) },
-      battle: { findFirst: jest.fn().mockResolvedValue(null) },
+      battleParticipantLock: { findUnique: jest.fn().mockResolvedValue(null) },
       auditLog: { create: jest.fn().mockResolvedValue(undefined) },
     };
     const prisma = {
@@ -101,7 +101,7 @@ describe('Pokémon gifting', () => {
           pokemon: { nameDisplay: 'Pikachu', rarity: 'Rare' },
         }),
       },
-      battle: { findFirst: jest.fn().mockResolvedValue({ id: 'battle-1' }) },
+      battleParticipantLock: { findUnique: jest.fn().mockResolvedValue({ battleId: 'battle-1' }) },
     };
     const prisma = {
       $transaction: jest.fn(async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx)),

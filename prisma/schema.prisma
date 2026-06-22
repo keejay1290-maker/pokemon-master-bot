@@ -409,16 +409,39 @@ model Battle {
   
   challengerTeam  Json?
   opponentTeam    Json?
+  state           Json?
   battleLog       Json?
   turns           Int       @default(0)
   
   rankedPointsChange Int?
+  challengerConfirmed Boolean @default(false)
+  opponentConfirmed   Boolean @default(false)
+  stakesTransferredAt DateTime?
+  expiresAt            DateTime?
   
   startedAt       DateTime?
   endedAt         DateTime?
   createdAt       DateTime  @default(now())
 
+  participantLocks BattleParticipantLock[]
+
+  @@index([guildId, status])
+  @@index([challengerId, status])
+  @@index([opponentId, status])
+  @@index([status, expiresAt])
   @@map("battles")
+}
+
+model BattleParticipantLock {
+  userId    String   @id
+  battleId  String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  battle    Battle   @relation(fields: [battleId], references: [id], onDelete: Cascade)
+
+  @@index([battleId])
+  @@index([expiresAt])
+  @@map("battle_participant_locks")
 }
 
 model Trade {
@@ -702,4 +725,22 @@ model EconomyLedger {
   @@index([toUserId, createdAt])
   @@index([type, createdAt])
   @@map("economy_ledger")
+}
+
+model OwnershipLedger {
+  id         String   @id @default(cuid())
+  type       String
+  assetType  String
+  assetId    String
+  fromUserId String
+  toUserId   String
+  battleId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([assetId, createdAt])
+  @@index([fromUserId, createdAt])
+  @@index([toUserId, createdAt])
+  @@index([battleId])
+  @@map("ownership_ledger")
 }

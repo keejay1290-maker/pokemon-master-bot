@@ -44,6 +44,14 @@ const command: Command = {
       return;
     }
 
+    const battleLock = await client.prisma.battleParticipantLock.findUnique({
+      where: { userId: interaction.user.id },
+    });
+    if (battleLock) {
+      await interaction.editReply({ content: '❌ Pokémon cannot be released while you have a battle or ranked challenge in progress.' });
+      return;
+    }
+
     // Block release if Pokémon is currently listed in an active auction
     const activeAuction = await client.prisma.marketListing.findFirst({
       where: { isAuction: true, status: 'active', itemData: { path: ['userPokemonId'], equals: up.id } },

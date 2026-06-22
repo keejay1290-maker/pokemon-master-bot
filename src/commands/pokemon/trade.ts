@@ -28,6 +28,14 @@ const command: Command = {
     const theirPokemon = await client.prisma.userPokemon.findFirst({ where: { id: requestId, userId: target.id }, include: { pokemon: true } });
     if (!theirPokemon) { await interaction.reply({ content: `<@${target.id}> doesn't have that Pokemon!`, ephemeral: true }); return; }
 
+    const battleLock = await client.prisma.battleParticipantLock.findFirst({
+      where: { userId: { in: [interaction.user.id, target.id] } },
+    });
+    if (battleLock) {
+      await interaction.reply({ content: '❌ Pokémon cannot be traded while either trainer has a battle in progress.', ephemeral: true });
+      return;
+    }
+
     // Block trade if either Pokémon is in an active auction
     const myAuction = await client.prisma.marketListing.findFirst({
       where: { isAuction: true, status: 'active', itemData: { path: ['userPokemonId'], equals: offerId } },
@@ -57,6 +65,7 @@ const command: Command = {
     const msg = await interaction.reply({ embeds: [embed], components: [row], fetchReply: true });
     const collector = msg.createMessageComponentCollector({ componentType: ComponentType.Button, time: 60000 });
 
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises
     collector.on('collect', async (btn) => {
       if (btn.user.id !== target.id) { await btn.reply({ content: "This trade isn't for you!", ephemeral: true }); return; }
       collector.stop();

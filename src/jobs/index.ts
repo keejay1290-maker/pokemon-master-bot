@@ -4,10 +4,15 @@ import { checkEventSchedule } from './eventJob.js';
 import { checkGiveaways } from './giveawayJob.js';
 import { resetDailyQuests } from './questJob.js';
 import { settleExpiredAuctions } from './auctionJob.js';
+import { recoverExpiredBattles } from './battleRecoveryJob.js';
 
 export function startJobService(client: BotClient) {
   // Check active giveaways every minute
   cron.schedule('* * * * *', () => checkGiveaways(client).catch(() => {}));
+  cron.schedule('* * * * *', () => recoverExpiredBattles(client).catch((error) => {
+    client.logger.error('Battle recovery job failed', error);
+  }));
+  recoverExpiredBattles(client).catch((error) => client.logger.error('Initial battle recovery failed', error));
 
   // Settle expired auctions every 5 minutes
   cron.schedule('*/5 * * * *', () => settleExpiredAuctions(client).catch(() => {}));
