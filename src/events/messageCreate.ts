@@ -15,7 +15,9 @@ export async function handleMessageCreate(message: Message, client: BotClient) {
   await checkAutoMod(message, client).catch(() => {});
 
   // Random spawn trigger
-  await handleSpawnMessage(message, client).catch(() => {});
+  await handleSpawnMessage(message, client).catch((err) => {
+    client.logger.error(`Spawn activity handler failed in guild ${message.guild?.id}:`, err);
+  });
 
   // XP gain (60s cooldown) — ensureUser first to avoid FK violation on new members
   const xpKey = `xp:cooldown:${message.guild.id}:${message.author.id}`;
@@ -28,7 +30,7 @@ export async function handleMessageCreate(message: Message, client: BotClient) {
       update: { xp: { increment: xpGain }, messages: { increment: 1 } },
       create: { guildId: message.guild.id, userId: message.author.id, xp: xpGain, messages: 1 },
     }).catch(() => {});
-    await client.redis.set(xpKey, '1', { EX: 60 });
+    await client.redis.set(xpKey, '1', { EX: 60 }).catch(() => {});
   }
 
   // Bot mention → Professor Grim AI

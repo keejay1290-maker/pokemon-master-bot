@@ -15,6 +15,7 @@ import {
   handlePackOpenAnother,
   handlePackViewCollection,
 } from '../handlers/packRevealHandler.js';
+import { handleSpawnCatch } from '../services/spawnService.js';
 
 export async function handleInteractionCreate(interaction: Interaction, client: BotClient) {
   if (interaction.isChatInputCommand()) {
@@ -32,7 +33,9 @@ async function handleButton(interaction: ButtonInteraction, client: BotClient) {
   const id = interaction.customId;
 
   try {
-    if (id.startsWith('pack_reveal:')) {
+    if (id.startsWith('catch_spawn:')) {
+      await handleSpawnCatch(interaction, client);
+    } else if (id.startsWith('pack_reveal:')) {
       const sessionId = id.slice('pack_reveal:'.length);
       await handlePackReveal(interaction, client, sessionId);
     } else if (id.startsWith('pack_finish:')) {

@@ -1,7 +1,6 @@
 import { SlashCommandBuilder, ChatInputCommandInteraction } from 'discord.js';
 import type { BotClient, Command } from '../../types/index.js';
 import { errorEmbed } from '../../utils/embeds.js';
-import { REDIS_KEYS, deserializeSpawn } from '../../utils/redisKeys.js';
 
 const command: Command = {
   data: new SlashCommandBuilder()
@@ -16,12 +15,18 @@ const command: Command = {
       return;
     }
 
-    const messageId = await client.redis.get(REDIS_KEYS.guildSpawn(interaction.guild.id));
-    const spawn = messageId
-      ? deserializeSpawn(await client.redis.get(REDIS_KEYS.spawn(messageId)))
-      : null;
+    const spawns = await client.prisma.spawn.findMany({
+      where: {
+        guildId: interaction.guild.id,
+        isCaught: false,
+        expiresAt: { gt: new Date() },
+        messageId: { not: null },
+      },
+      orderBy: { spawnedAt: 'desc' },
+      take: 5,
+    });
 
-    if (!spawn) {
+    if (spawns.length === 0) {
       await interaction.reply({
         embeds: [errorEmbed('No Pokemon', 'There are no wild Pokemon to catch right now!\nWait for one to spawn or be active in the server.')],
         ephemeral: true,
@@ -29,18 +34,10 @@ const command: Command = {
       return;
     }
 
-    // The actual catching happens via button click on the spawn message
-    // Also set a Redis cooldown keyed to guild-configured catchCooldown to rate-limit /catch usage
-    try {
-      const guild = await client.prisma.guild.findUnique({ where: { id: interaction.guild.id } });
-      const cd = guild?.catchCooldown ?? 3;
-      await client.redis.set(`cooldown:${interaction.user.id}:catch`, (Date.now() + cd * 1000).toString(), { EX: cd });
-    } catch {
-      // non-fatal — keep best-effort behavior
-    }
-
     await interaction.reply({
-      content: `There's a wild Pokemon in <#${spawn.channelId}>! Go click the **Catch!** button on the spawn message!`,
+      content: spawns.length === 1
+        ? `There's a wild Pokémon in <#${spawns[0].channelId}>! Press **Throw Poké Ball** on its encounter.`
+        : `There are **${spawns.length} active encounters**:\n${spawns.map((spawn) => `• <#${spawn.channelId}>`).join('\n')}\nPress **Throw Poké Ball** on the one you want!`,
       ephemeral: true,
     });
   },

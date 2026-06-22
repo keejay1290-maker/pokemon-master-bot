@@ -69,6 +69,8 @@ model Guild {
   spawnEnabled          Boolean   @default(true)
   spawnRate             Int       @default(5)
   spawnCooldown         Int       @default(30)
+  spawnChannelIds       String[]  @default([])
+  spawnMode             String    @default("random")
   legendaryRate         Float     @default(0.001)
   mythicalRate          Float     @default(0.0005)
   shinyRate             Float     @default(0.002)
@@ -594,6 +596,8 @@ model Spawn {
   caughtAt    DateTime?
   expiresAt   DateTime
 
+  @@index([guildId, isCaught, expiresAt])
+  @@index([guildId, spawnedAt])
   @@map("spawns")
 }
 

@@ -21,7 +21,10 @@ const command: Command = {
       s.setName('spawns').setDescription('Configure spawn settings')
         .addBooleanOption((o) => o.setName('enabled').setDescription('Enable spawns'))
         .addIntegerOption((o) => o.setName('cooldown').setDescription('Spawn cooldown in seconds').setMinValue(10))
+        .addIntegerOption((o) => o.setName('rate').setDescription('Chance per message (1-100%)').setMinValue(1).setMaxValue(100))
         .addNumberOption((o) => o.setName('shiny_rate').setDescription('Shiny rate (0.001 = 0.1%)').setMinValue(0.0001).setMaxValue(0.1))
+        .addNumberOption((o) => o.setName('legendary_rate').setDescription('Legendary rate (0-0.1)').setMinValue(0).setMaxValue(0.1))
+        .addNumberOption((o) => o.setName('mythical_rate').setDescription('Mythical rate (0-0.1)').setMinValue(0).setMaxValue(0.1))
     )
     .addSubcommand((s) =>
       s.setName('moderation').setDescription('Configure moderation settings')
@@ -66,10 +69,16 @@ const command: Command = {
       const data: Record<string, unknown> = {};
       const enabled = interaction.options.getBoolean('enabled');
       const cooldown = interaction.options.getInteger('cooldown');
+      const rate = interaction.options.getInteger('rate');
       const shinyRate = interaction.options.getNumber('shiny_rate');
+      const legendaryRate = interaction.options.getNumber('legendary_rate');
+      const mythicalRate = interaction.options.getNumber('mythical_rate');
       if (enabled !== null) data.spawnEnabled = enabled;
       if (cooldown !== null) data.spawnCooldown = cooldown;
+      if (rate !== null) data.spawnRate = rate;
       if (shinyRate !== null) data.shinyRate = shinyRate;
+      if (legendaryRate !== null) data.legendaryRate = legendaryRate;
+      if (mythicalRate !== null) data.mythicalRate = mythicalRate;
 
       await client.prisma.guild.update({ where: { id: interaction.guild.id }, data });
       await interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00ff00).setTitle('✅ Spawn Config Updated').setDescription(JSON.stringify(data, null, 2))], ephemeral: true });
@@ -106,7 +115,7 @@ const command: Command = {
         .setColor(0x3498db).setTitle('⚙️ Server Configuration')
         .addFields(
           { name: '💰 Economy', value: `Daily: ${formatNumber(guild.dailyReward)}\nWeekly: ${formatNumber(guild.weeklyReward)}\nWork CD: ${guild.workCooldown}s`, inline: true },
-          { name: '🐾 Spawns', value: `Enabled: ${guild.spawnEnabled}\nCooldown: ${guild.spawnCooldown}s\nShiny Rate: ${(guild.shinyRate * 100).toFixed(2)}%`, inline: true },
+          { name: '🐾 Spawns', value: `Enabled: ${guild.spawnEnabled}\nRate: ${guild.spawnRate}% per message\nCooldown: ${guild.spawnCooldown}s\nChannels: ${guild.spawnChannelIds.length || (guild.pokeSpawnsChannelId ? 1 : 0)}\nMode: ${guild.spawnMode}\nShiny: ${(guild.shinyRate * 100).toFixed(2)}%`, inline: true },
           { name: '🔨 Moderation', value: `Anti-Spam: ${guild.antiSpamEnabled}\nScam: ${guild.scamDetectionEnabled}\nRaid: ${guild.antiRaidEnabled}`, inline: true },
           { name: '🦹 Rob', value: `Enabled: ${guild.robEnabled}\nSuccess: ${(guild.robSuccessRate * 100).toFixed(0)}%\nCooldown: ${guild.robCooldown}s`, inline: true },
         );

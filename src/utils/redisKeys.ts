@@ -3,6 +3,7 @@ import { ActiveSpawn, BattleState } from '../types/index.js';
 export const REDIS_KEYS = {
   spawn: (messageId: string) => `spawn:active:${messageId}`,
   guildSpawn: (guildId: string) => `spawn:guild:${guildId}`,
+  spawnCooldown: (guildId: string) => `spawn:cooldown:${guildId}`,
   battle: (battleId: string) => `battle:${battleId}`,
   battleLock: (userId: string) => `battle:user:${userId}`,
   cooldown: (userId: string, command: string) => `cooldown:${userId}:${command}`,

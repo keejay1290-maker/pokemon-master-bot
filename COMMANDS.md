@@ -14,7 +14,14 @@ Look up any Pokemon's stats, types, abilities, and description.
 View your Pokedex completion stats and caught Pokemon by rarity.
 
 ### `/catch`
-Catch a wild Pokemon that has spawned in your server. Wild Pokemon spawn automatically in the configured spawn channel. Use the **Catch!** button on the spawn message.
+Find active wild encounters in your server. Wild Pokémon spawn automatically in configured channels. Use the **Throw Poké Ball** button on an encounter to catch it.
+
+### `/spawn` *(Administrator)*
+Control wild encounters:
+- `/spawn now` — force encounters immediately, optionally choosing a Pokémon, channel, or every configured channel.
+- `/spawn channels` — add, remove, clear, or list multiple spawn channels.
+- `/spawn settings` — toggle automatic spawns and configure message chance, cooldown, and random/all-channel mode.
+- `/spawn status` — inspect active encounters and current spawn health.
 
 ### `/box [page]`
 Browse your Pokemon collection with pagination.

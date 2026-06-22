@@ -1,11 +1,33 @@
 # NEXT SESSION TASKS
 **Project:** pokemon-master-bot  
 **Scope:** This file applies ONLY to the pokemon-master-bot repository and Railway project.  
-**Updated:** 2026-06-16 (Session 18 — Career Rework Audit)
+**Updated:** 2026-06-22 (Spawn System Recovery)
 
 ---
 
 ## CURRENT STATE
+
+- Wild encounter system repaired locally; deployment verification is still required.
+- New Prisma fields require production schema application: `spawnChannelIds` and `spawnMode`.
+- New administrator command: `/spawn`.
+- TypeScript passes after the spawn changes.
+
+## IMMEDIATE DEPLOYMENT TASKS
+
+1. Apply the Prisma schema in the deployment environment:
+   ```bash
+   npm run db:push
+   ```
+2. Deploy/restart the bot so the global interaction router handles `catch_spawn:*` buttons.
+3. Confirm automatic slash-command registration includes `/spawn`.
+4. In Discord, run:
+   - `/spawn channels action:add channel:#poke-spawns`
+   - `/spawn settings enabled:true rate:5 cooldown:30 mode:random`
+   - `/spawn now count:2`
+   - Catch both encounters and confirm both appear in `/pokedex`.
+5. Test once with Redis connected and once with Redis unavailable; spawning must work in both cases.
+
+Full handover: `docs/SPAWN_SYSTEM_HANDOVER_2026-06-22.md`
 
 - S18 Career Rework implemented and audited
 - TypeScript compiles cleanly (`npx tsc --noEmit` → NO ERRORS)

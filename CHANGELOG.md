@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-06-22 — Spawn System Recovery
+
+- Fixed silent spawn failure when Redis is unavailable by adding a database cooldown fallback.
+- Made spawn catches database-authoritative and restart-safe through the global button router.
+- Added concurrent encounters and multiple configured spawn channels.
+- Added `/spawn now`, `/spawn channels`, `/spawn settings`, and `/spawn status` administrator controls.
+- Connected the existing `spawnRate` guild setting to the actual per-message spawn probability.
+- Made catch ownership and Pokédex collection creation atomic in one database transaction.
+
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]

@@ -2,7 +2,6 @@ import { PrismaClient } from '@prisma/client';
 import {
   Guild as DiscordGuild,
   ChannelType,
-  PermissionsBitField,
   CategoryChannel,
   TextChannel,
 } from 'discord.js';
@@ -56,7 +55,9 @@ export async function runFullSetup(guild: DiscordGuild, prisma: PrismaClient) {
       name: '🎮 Pokemon Master',
       type: ChannelType.GuildCategory,
     });
-  } catch {}
+  } catch {
+    // Continue with uncategorized channels if category creation is unavailable.
+  }
 
   // Create channels
   for (const ch of channelNames) {
@@ -77,7 +78,9 @@ export async function runFullSetup(guild: DiscordGuild, prisma: PrismaClient) {
         parent: category?.id,
       });
       createdChannels[ch.name] = created.id;
-    } catch {}
+    } catch {
+      // Setup is best-effort; report only the channels that were created.
+    }
   }
 
   // Create roles
@@ -94,7 +97,9 @@ export async function runFullSetup(guild: DiscordGuild, prisma: PrismaClient) {
         reason: 'Pokemon Master Full Setup',
       });
       createdRoles[role.name] = created.id;
-    } catch {}
+    } catch {
+      // Setup is best-effort; report only the roles that were created.
+    }
   }
 
   // Update DB
@@ -110,6 +115,7 @@ export async function runFullSetup(guild: DiscordGuild, prisma: PrismaClient) {
       pokemonTradesChannelId: createdChannels['pokemon-trades'],
       pokemonShowcaseChannelId: createdChannels['pokemon-showcase'],
       pokeSpawnsChannelId: createdChannels['poke-spawns'],
+      spawnChannelIds: createdChannels['poke-spawns'] ? [createdChannels['poke-spawns']] : [],
       pokecoinsChannelId: createdChannels['pokecoins'],
       giveawaysChannelId: createdChannels['giveaways'],
       botCommandsChannelId: createdChannels['bot-commands'],
